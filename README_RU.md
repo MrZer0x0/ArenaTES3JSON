@@ -98,13 +98,13 @@ ArenaTES3JSON-cli --no-lossless plugin.esp plugin.json
 - Visual Studio 2022 / MSVC x64;
 - CMake 3.24+;
 - Qt 6.5+ MSVC kit;
-- Rust **stable** + Cargo.
+- Rust **nightly** + Cargo.
 
 Пример:
 
 ```bat
-rustup toolchain install stable
-rustup default stable
+rustup toolchain install nightly
+rustup default nightly
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```

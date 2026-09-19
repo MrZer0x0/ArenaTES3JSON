@@ -1,12 +1,13 @@
 #pragma once
 
+#include <QByteArray>
 #include <QMainWindow>
+#include <QProcess>
 
-class QCheckBox;
-class QComboBox;
+class QLabel;
 class QLineEdit;
+class QProgressBar;
 class QPushButton;
-class QTextEdit;
 class QDragEnterEvent;
 class QDropEvent;
 
@@ -26,16 +27,29 @@ private slots:
     void browseOutput();
     void updateOutput();
     void convert();
-    void verify();
+    void readBackendStdout();
+    void readBackendStderr();
+    void backendFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void backendError(QProcess::ProcessError error);
 
 private:
+    void setBusy(bool busy);
+    void handleProgressLine(const QByteArray &line);
+    QString directionText() const;
+
     QLineEdit *m_input = nullptr;
     QLineEdit *m_output = nullptr;
-    QComboBox *m_encoding = nullptr;
-    QCheckBox *m_compact = nullptr;
-    QCheckBox *m_lossless = nullptr;
+    QLabel *m_direction = nullptr;
+    QLabel *m_status = nullptr;
+    QProgressBar *m_progress = nullptr;
+    QPushButton *m_inputBrowse = nullptr;
+    QPushButton *m_outputBrowse = nullptr;
     QPushButton *m_convert = nullptr;
-    QTextEdit *m_log = nullptr;
+    QProcess *m_process = nullptr;
+
+    QByteArray m_stdout;
+    QByteArray m_stderrPending;
+    QByteArray m_errorText;
 };
 
 } // namespace arena::tes3json

@@ -1,6 +1,6 @@
 [package]
 name = "arenates3json-core"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 
@@ -9,15 +9,11 @@ name = "ArenaTES3JSON-core"
 path = "src/main.rs"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-sha2 = "0.10"
-zstd = "0.13"
 
 # Pinned to the same TES3 object model used by the supplied tes3conv GUI.
-# This is what gives ArenaTES3JSON tes3conv-compatible semantic JSON.
-# Keep tes3 nightly/simd disabled: they are optional optimizations and currently
-# enable hashbrown nightly specialization that recent rustc rejects.
+# This gives ArenaTES3JSON the same semantic JSON structure.
+# Nightly/SIMD features stay disabled so current stable Rust builds reliably.
 [dependencies.tes3]
 git = "https://github.com/Greatness7/tes3"
 rev = "95cbc2cad2c574b023da879e308d3f6f6c4c3e04"

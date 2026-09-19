@@ -21,11 +21,6 @@ jobs:
           arch: 'win64_msvc2022_64'
           cache: true
 
-      - name: Rust versions
-        run: |
-          rustc --version --verbose
-          cargo --version
-
       - name: Test semantic backend
         run: cargo test --manifest-path core-rs/Cargo.toml
 

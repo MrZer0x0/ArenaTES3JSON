@@ -1,15 +1,10 @@
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tes3::esp::Plugin;
-
-const SIDECAR_MAGIC: &[u8; 8] = b"AT3JLS02";
-const SIDECAR_VERSION: u32 = 2;
 
 // Windows-1251 bytes 0x80..0xFF. Undefined 0x98 is U+FFFD and is deliberately
 // not converted so the original pseudo-Latin-1 code point remains reversible.
@@ -36,41 +31,15 @@ const CP1251_HIGH: [char; 128] = [
 struct Cli {
     command: String,
     input: PathBuf,
-    output: Option<PathBuf>,
+    output: PathBuf,
     compact: bool,
     encoding: EncodingMode,
-    lossless: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EncodingMode {
     Cp1251,
     Raw,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SidecarMeta {
-    version: u32,
-    semantic_sha256: String,
-    source_sha256: String,
-    source_extension: String,
-    source_name: String,
-    source_size: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct Status<'a> {
-    ok: bool,
-    command: &'a str,
-    mode: &'a str,
-    output: String,
-    sidecar: Option<String>,
-    input_size: u64,
-    output_size: u64,
-    source_sha256: Option<String>,
-    output_sha256: Option<String>,
-    byte_identical: bool,
-    message: String,
 }
 
 fn main() {
@@ -85,20 +54,16 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command.as_str() {
         "to-json" => to_json(&cli)?,
         "to-plugin" => to_plugin(&cli)?,
-        "verify" => verify(&cli)?,
-        "probe" => probe(&cli)?,
         _ => return Err(format!("unknown command: {}", cli.command).into()),
     }
     Ok(())
 }
 
 fn usage() -> &'static str {
-    "ArenaTES3JSON-core 0.2.1\n\
+    "ArenaTES3JSON-core 0.3.0\n\
      Usage:\n\
-       ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding cp1251|raw] [--no-lossless]\n\
-       ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding cp1251|raw] [--no-lossless]\n\
-       ArenaTES3JSON-core verify INPUT.esm [--encoding cp1251|raw]\n\
-       ArenaTES3JSON-core probe INPUT.json\n"
+       ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding cp1251|raw]\n\
+       ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding cp1251|raw]\n"
 }
 
 fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
@@ -108,20 +73,22 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ArenaTES3JSON-core 0.2.1");
+        println!("ArenaTES3JSON-core 0.3.0");
         std::process::exit(0);
     }
 
     let command = args[0].clone();
+    if !matches!(command.as_str(), "to-json" | "to-plugin") {
+        return Err(format!("unknown command: {command}").into());
+    }
+
     let mut positional = Vec::new();
     let mut compact = false;
     let mut encoding = EncodingMode::Cp1251;
-    let mut lossless = true;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--compact" | "-c" => compact = true,
-            "--no-lossless" => lossless = false,
             "--encoding" => {
                 i += 1;
                 let value = args.get(i).ok_or("--encoding requires a value")?;
@@ -137,173 +104,102 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    let input = positional.first().cloned().ok_or("missing input file")?;
-    let output = positional.get(1).cloned();
-    if matches!(command.as_str(), "to-json" | "to-plugin") && output.is_none() {
-        return Err("missing output file".into());
+    if positional.len() < 2 {
+        return Err("missing input or output file".into());
     }
-    Ok(Cli { command, input, output, compact, encoding, lossless })
+
+    Ok(Cli {
+        command,
+        input: positional[0].clone(),
+        output: positional[1].clone(),
+        compact,
+        encoding,
+    })
+}
+
+fn report_progress(percent: u8, stage: &str) {
+    eprintln!("AT3J_PROGRESS\t{}\t{}", percent.min(100), stage);
+    let _ = io::stderr().flush();
+}
+
+fn emit_status(command: &str, mode: &str, output: &Path, input_size: u64, output_size: u64, message: &str) {
+    let status = serde_json::json!({
+        "ok": true,
+        "command": command,
+        "mode": mode,
+        "output": output.display().to_string(),
+        "input_size": input_size,
+        "output_size": output_size,
+        "message": message,
+    });
+    println!("{}", status);
 }
 
 fn to_json(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let output = cli.output.as_ref().unwrap();
-    let source = fs::read(&cli.input)?;
+    report_progress(4, "read-plugin");
+    let input_size = fs::metadata(&cli.input)?.len();
+
+    report_progress(12, "parse-plugin");
     let mut plugin = Plugin::new();
     plugin.load_path(&cli.input)?;
 
-    // Important: do not sort. The supplied MFR.json format follows the object
-    // order from the plugin, just like the supplied tes3conv GUI.
+    report_progress(58, "serialize-json");
+    // Do not sort. The supplied MFR.json and tes3conv preserve plugin object order.
     let raw_json = serde_json::to_string(&plugin.objects)?;
     let mut value: Value = serde_json::from_str(&raw_json)?;
+
+    report_progress(70, "decode-windows-1251");
     transform_export_value(&mut value, cli.encoding);
+
+    report_progress(86, "write-json");
     let json = if cli.compact {
         serde_json::to_string(&value)?
     } else {
         serde_json::to_string_pretty(&value)?
     };
-    atomic_write(output, json.as_bytes())?;
+    atomic_write(&cli.output, json.as_bytes())?;
 
-    let semantic = semantic_hash(&json)?;
-    let sidecar = if cli.lossless {
-        let sidecar = sidecar_path(output);
-        let meta = SidecarMeta {
-            version: SIDECAR_VERSION,
-            semantic_sha256: semantic,
-            source_sha256: sha256_hex(&source),
-            source_extension: extension_string(&cli.input),
-            source_name: cli.input.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy().into_owned(),
-            source_size: source.len() as u64,
-        };
-        write_sidecar(&sidecar, &meta, &source)?;
-        Some(sidecar)
-    } else {
-        None
-    };
-
-    let status = Status {
-        ok: true,
-        command: "to-json",
-        mode: if cli.lossless { "semantic-json+lossless-sidecar" } else { "semantic-json" },
-        output: output.display().to_string(),
-        sidecar: sidecar.as_ref().map(|p| p.display().to_string()),
-        input_size: source.len() as u64,
-        output_size: json.len() as u64,
-        source_sha256: Some(sha256_hex(&source)),
-        output_sha256: Some(sha256_hex(json.as_bytes())),
-        byte_identical: false,
-        message: "tes3conv-compatible semantic JSON written".to_owned(),
-    };
-    println!("{}", serde_json::to_string(&status)?);
+    report_progress(100, "done");
+    emit_status(
+        "to-json",
+        "semantic-json",
+        &cli.output,
+        input_size,
+        json.len() as u64,
+        "tes3conv-compatible semantic JSON written",
+    );
     Ok(())
 }
 
 fn to_plugin(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let output = cli.output.as_ref().unwrap();
+    report_progress(4, "read-json");
     let json = fs::read_to_string(&cli.input)?;
-    let semantic = semantic_hash(&json)?;
-    let sidecar = sidecar_path(&cli.input);
 
-    if cli.lossless && sidecar.exists() {
-        let (meta, source) = read_sidecar(&sidecar)?;
-        if meta.semantic_sha256 == semantic {
-            atomic_write(output, &source)?;
-            let output_hash = sha256_hex(&source);
-            let identical = output_hash == meta.source_sha256 && source.len() as u64 == meta.source_size;
-            let status = Status {
-                ok: true,
-                command: "to-plugin",
-                mode: "lossless-restore",
-                output: output.display().to_string(),
-                sidecar: Some(sidecar.display().to_string()),
-                input_size: json.len() as u64,
-                output_size: source.len() as u64,
-                source_sha256: Some(meta.source_sha256),
-                output_sha256: Some(output_hash),
-                byte_identical: identical,
-                message: "JSON is semantically unchanged; restored original plugin byte-for-byte".to_owned(),
-            };
-            println!("{}", serde_json::to_string(&status)?);
-            return Ok(());
-        }
-    }
-
+    report_progress(15, "parse-json");
     let mut value: Value = serde_json::from_str(&json)?;
+
+    report_progress(30, "encode-windows-1251");
     transform_import_value(&mut value, cli.encoding);
+
+    report_progress(48, "deserialize-plugin");
     let tes3_json = serde_json::to_string(&value)?;
     let mut plugin = Plugin::new();
     plugin.objects = serde_json::from_str(&tes3_json)?;
-    plugin.save_path(output)?;
-    let written = fs::read(output)?;
-    let status = Status {
-        ok: true,
-        command: "to-plugin",
-        mode: if sidecar.exists() { "edited-json-rebuild" } else { "canonical-rebuild" },
-        output: output.display().to_string(),
-        sidecar: if sidecar.exists() { Some(sidecar.display().to_string()) } else { None },
-        input_size: json.len() as u64,
-        output_size: written.len() as u64,
-        source_sha256: None,
-        output_sha256: Some(sha256_hex(&written)),
-        byte_identical: false,
-        message: "JSON was changed or has no lossless sidecar; plugin rebuilt from semantic data".to_owned(),
-    };
-    println!("{}", serde_json::to_string(&status)?);
-    Ok(())
-}
 
-fn verify(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let source = fs::read(&cli.input)?;
-    let mut plugin = Plugin::new();
-    plugin.load_path(&cli.input)?;
-    let raw_json = serde_json::to_string(&plugin.objects)?;
-    let mut value: Value = serde_json::from_str(&raw_json)?;
-    transform_export_value(&mut value, cli.encoding);
-    let json = serde_json::to_string_pretty(&value)?;
-    let semantic = semantic_hash(&json)?;
+    report_progress(70, "write-plugin");
+    plugin.save_path(&cli.output)?;
 
-    let meta = SidecarMeta {
-        version: SIDECAR_VERSION,
-        semantic_sha256: semantic_hash(&json)?,
-        source_sha256: sha256_hex(&source),
-        source_extension: extension_string(&cli.input),
-        source_name: cli.input.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy().into_owned(),
-        source_size: source.len() as u64,
-    };
-    let byte_identical = meta.semantic_sha256 == semantic
-        && meta.source_sha256 == sha256_hex(&source)
-        && meta.source_size == source.len() as u64;
-
-    let status = Status {
-        ok: byte_identical,
-        command: "verify",
-        mode: "lossless-sidecar-round-trip",
-        output: cli.input.display().to_string(),
-        sidecar: None,
-        input_size: source.len() as u64,
-        output_size: source.len() as u64,
-        source_sha256: Some(meta.source_sha256.clone()),
-        output_sha256: Some(meta.source_sha256),
-        byte_identical,
-        message: if byte_identical {
-            "lossless path preserves the source byte-for-byte".to_owned()
-        } else {
-            "lossless verification failed".to_owned()
-        },
-    };
-    println!("{}", serde_json::to_string(&status)?);
-    if byte_identical { Ok(()) } else { Err("verification failed".into()) }
-}
-
-fn probe(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let json = fs::read_to_string(&cli.input)?;
-    let value: Value = serde_json::from_str(&json)?;
-    let mut file_type = "Esp";
-    if let Some(first) = value.as_array().and_then(|a| a.first()) {
-        if first.get("type").and_then(Value::as_str) == Some("Header") {
-            file_type = first.get("file_type").and_then(Value::as_str).unwrap_or("Esp");
-        }
-    }
-    println!("{{\"file_type\":{}}}", serde_json::to_string(file_type)?);
+    report_progress(96, "finish");
+    let output_size = fs::metadata(&cli.output)?.len();
+    report_progress(100, "done");
+    emit_status(
+        "to-plugin",
+        "semantic-rebuild",
+        &cli.output,
+        json.len() as u64,
+        output_size,
+        "plugin rebuilt from semantic JSON",
+    );
     Ok(())
 }
 
@@ -382,90 +278,6 @@ fn pseudo_char_from_cp1251(c: char) -> Option<char> {
         .and_then(|idx| char::from_u32((idx as u32) + 0x80))
 }
 
-fn semantic_hash(json: &str) -> Result<String, serde_json::Error> {
-    let value: Value = serde_json::from_str(json)?;
-    let canonical = canonicalize_value(value);
-    let bytes = serde_json::to_vec(&canonical)?;
-    Ok(sha256_hex(&bytes))
-}
-
-fn canonicalize_value(value: Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.into_iter().map(canonicalize_value).collect()),
-        Value::Object(map) => {
-            let mut entries: Vec<_> = map.into_iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut sorted = serde_json::Map::new();
-            for (key, value) in entries {
-                sorted.insert(key, canonicalize_value(value));
-            }
-            Value::Object(sorted)
-        }
-        other => other,
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}
-
-fn extension_string(path: &Path) -> String {
-    path.extension().unwrap_or_else(|| OsStr::new("esp")).to_string_lossy().to_ascii_lowercase()
-}
-
-fn sidecar_path(json_path: &Path) -> PathBuf {
-    json_path.with_extension("arena-lossless")
-}
-
-fn write_sidecar(path: &Path, meta: &SidecarMeta, source: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    let meta_json = serde_json::to_vec(meta)?;
-    if meta_json.len() > u32::MAX as usize {
-        return Err("sidecar metadata too large".into());
-    }
-    let compressed = zstd::stream::encode_all(source, 7)?;
-    let mut bytes = Vec::with_capacity(8 + 4 + meta_json.len() + compressed.len());
-    bytes.extend_from_slice(SIDECAR_MAGIC);
-    bytes.extend_from_slice(&(meta_json.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&meta_json);
-    bytes.extend_from_slice(&compressed);
-    atomic_write(path, &bytes)?;
-    Ok(())
-}
-
-fn read_sidecar(path: &Path) -> Result<(SidecarMeta, Vec<u8>), Box<dyn std::error::Error>> {
-    let mut file = File::open(path)?;
-    let mut magic = [0u8; 8];
-    file.read_exact(&mut magic)?;
-    if &magic != SIDECAR_MAGIC {
-        return Err("invalid ArenaTES3JSON lossless sidecar".into());
-    }
-    let mut len = [0u8; 4];
-    file.read_exact(&mut len)?;
-    let meta_len = u32::from_le_bytes(len) as usize;
-    if meta_len > 16 * 1024 * 1024 {
-        return Err("invalid sidecar metadata length".into());
-    }
-    let mut meta_json = vec![0u8; meta_len];
-    file.read_exact(&mut meta_json)?;
-    let meta: SidecarMeta = serde_json::from_slice(&meta_json)?;
-    if meta.version != SIDECAR_VERSION {
-        return Err(format!("unsupported sidecar version: {}", meta.version).into());
-    }
-    let source = zstd::stream::decode_all(file)?;
-    if source.len() as u64 != meta.source_size || sha256_hex(&source) != meta.source_sha256 {
-        return Err("lossless sidecar checksum mismatch".into());
-    }
-    Ok((meta, source))
-}
-
 fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
@@ -502,9 +314,14 @@ mod tests {
     }
 
     #[test]
-    fn semantic_hash_ignores_pretty_printing() {
-        let a = "[ { \"type\": \"Header\", \"version\": 1.3 } ]";
-        let b = "[{\"version\":1.3,\"type\":\"Header\"}]";
-        assert_eq!(semantic_hash(a).unwrap(), semantic_hash(b).unwrap());
+    fn cp1251_high_table_round_trip() {
+        for byte in 0x80u32..=0xFF {
+            if byte == 0x98 {
+                continue;
+            }
+            let pseudo = char::from_u32(byte).unwrap();
+            let unicode = cp1251_from_pseudo_char(pseudo);
+            assert_eq!(pseudo_char_from_cp1251(unicode), Some(pseudo));
+        }
     }
 }

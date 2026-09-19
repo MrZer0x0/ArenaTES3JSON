@@ -10,14 +10,6 @@
 
 #include <stdexcept>
 
-#ifndef ARENATES3JSON_RUST_CORE_NAME
-#  ifdef Q_OS_WIN
-#    define ARENATES3JSON_RUST_CORE_NAME "ArenaTES3JSON-core.exe"
-#  else
-#    define ARENATES3JSON_RUST_CORE_NAME "ArenaTES3JSON-core"
-#  endif
-#endif
-
 namespace arena::tes3json {
 namespace {
 
@@ -26,16 +18,18 @@ namespace {
     throw std::runtime_error(message.toUtf8().constData());
 }
 
-QString encodingArgument(TextEncodingMode mode)
+QString encodingArgument(TextEncodingMode encoding)
 {
-    return mode == TextEncodingMode::Windows1251 ? QStringLiteral("cp1251") : QStringLiteral("raw");
+    return encoding == TextEncodingMode::Windows1251
+        ? QStringLiteral("cp1251")
+        : QStringLiteral("raw");
 }
 
 QString detectJsonFileType(const QString &path)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return QStringLiteral("esp");
-    const QByteArray prefix = file.read(128 * 1024);
+    const QByteArray prefix = file.read(256 * 1024);
     const qsizetype marker = prefix.indexOf("\"file_type\"");
     if (marker < 0) return QStringLiteral("esp");
     const QByteArray nearby = prefix.mid(marker, 256).toLower();
@@ -69,6 +63,25 @@ QString Converter::defaultOutputFor(const QString &inputPath)
     return info.dir().filePath(info.completeBaseName() + QStringLiteral(".json"));
 }
 
+ConversionResult Converter::parseBackendStatus(const QByteArray &stdoutData)
+{
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(stdoutData.trimmed(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        fail(QStringLiteral("Backend вернул некорректный статус JSON: %1\n%2")
+             .arg(parseError.errorString(), QString::fromUtf8(stdoutData)));
+    }
+
+    const QJsonObject obj = doc.object();
+    ConversionResult result;
+    result.outputPath = obj.value(QStringLiteral("output")).toString();
+    result.mode = obj.value(QStringLiteral("mode")).toString();
+    result.message = obj.value(QStringLiteral("message")).toString();
+    result.inputSize = static_cast<qint64>(obj.value(QStringLiteral("input_size")).toDouble());
+    result.outputSize = static_cast<qint64>(obj.value(QStringLiteral("output_size")).toDouble());
+    return result;
+}
+
 ConversionResult Converter::runBackend(const QStringList &arguments)
 {
     QProcess process;
@@ -93,67 +106,26 @@ ConversionResult Converter::runBackend(const QStringList &arguments)
         fail(error.isEmpty() ? QStringLiteral("Ошибка backend ArenaTES3JSON-core") : error);
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(stdoutData, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        fail(QStringLiteral("Backend вернул некорректный статус JSON: %1\n%2")
-             .arg(parseError.errorString(), QString::fromUtf8(stdoutData)));
-    }
-
-    const QJsonObject obj = doc.object();
-    ConversionResult result;
-    result.outputPath = obj.value(QStringLiteral("output")).toString();
-    result.sidecarPath = obj.value(QStringLiteral("sidecar")).toString();
-    result.mode = obj.value(QStringLiteral("mode")).toString();
-    result.message = obj.value(QStringLiteral("message")).toString();
-    result.inputSha256 = obj.value(QStringLiteral("source_sha256")).toString();
-    result.outputSha256 = obj.value(QStringLiteral("output_sha256")).toString();
-    result.inputSize = static_cast<qint64>(obj.value(QStringLiteral("input_size")).toDouble());
-    result.outputSize = static_cast<qint64>(obj.value(QStringLiteral("output_size")).toDouble());
-    result.byteIdenticalToSource = obj.value(QStringLiteral("byte_identical")).toBool(false);
-    return result;
+    return parseBackendStatus(stdoutData);
 }
 
 ConversionResult Converter::pluginToJson(const QString &inputPath,
                                          const QString &outputPath,
                                          bool compact,
-                                         TextEncodingMode encoding,
-                                         bool lossless)
+                                         TextEncodingMode encoding)
 {
     QStringList args{QStringLiteral("to-json"), inputPath, outputPath,
                      QStringLiteral("--encoding"), encodingArgument(encoding)};
     if (compact) args << QStringLiteral("--compact");
-    if (!lossless) args << QStringLiteral("--no-lossless");
     return runBackend(args);
 }
 
 ConversionResult Converter::jsonToPlugin(const QString &inputPath,
                                          const QString &outputPath,
-                                         TextEncodingMode encoding,
-                                         bool lossless)
+                                         TextEncodingMode encoding)
 {
-    QStringList args{QStringLiteral("to-plugin"), inputPath, outputPath,
-                     QStringLiteral("--encoding"), encodingArgument(encoding)};
-    if (!lossless) args << QStringLiteral("--no-lossless");
-    return runBackend(args);
-}
-
-bool Converter::verifyRoundTrip(const QString &pluginPath, QString *details, TextEncodingMode encoding)
-{
-    try {
-        const ConversionResult result = runBackend({QStringLiteral("verify"), pluginPath,
-                                                    QStringLiteral("--encoding"), encodingArgument(encoding)});
-        if (details) {
-            *details = QStringLiteral("%1\nРазмер: %2 байт\nSHA-256: %3")
-                           .arg(result.message)
-                           .arg(result.outputSize)
-                           .arg(result.outputSha256);
-        }
-        return result.byteIdenticalToSource;
-    } catch (const std::exception &error) {
-        if (details) *details = QString::fromUtf8(error.what());
-        return false;
-    }
+    return runBackend({QStringLiteral("to-plugin"), inputPath, outputPath,
+                       QStringLiteral("--encoding"), encodingArgument(encoding)});
 }
 
 } // namespace arena::tes3json

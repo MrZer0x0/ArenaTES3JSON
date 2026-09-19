@@ -1,13 +1,5 @@
 # Changelog
 
-## 0.2.1
-
-- Fixed current Windows CI failure in `hashbrown 0.14.5`: `cannot specialize on trait Copy`.
-- Removed the optional TES3 `nightly` and `simd` features from ArenaTES3JSON; the semantic backend now enables only `esp` and `serde`.
-- Switched the backend and GitHub Actions from moving Rust nightly to Rust stable.
-- Added `rust-toolchain.toml` and CI Rust version diagnostics.
-- Kept the pinned TES3 revision and the tes3conv-compatible JSON schema unchanged.
-
 ## 0.2.0
 
 - Replaced the incorrect low-level Arena JSON schema with tes3conv-compatible semantic JSON.
