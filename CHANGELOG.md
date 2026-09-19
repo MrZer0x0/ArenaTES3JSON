@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 buildfix (Windows CI)
+
+- Include `<QDir>` in the CLI: the new `--file-type` auto-output path calls `QFileInfo::dir()` and requires a complete QDir type.
+- Add a CLI `--help` smoke test to CTest and to the Windows GitHub Actions workflow.
+
 ## 0.4.1
 
 - Store the original plugin filesystem mtime in Header._arena_file_mtime_utc (RFC3339 UTC) on ESM/ESP → JSON.
