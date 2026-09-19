@@ -19,13 +19,6 @@ namespace {
     throw std::runtime_error(message.toUtf8().constData());
 }
 
-QString encodingArgument(TextEncodingMode encoding)
-{
-    return encoding == TextEncodingMode::Windows1251
-        ? QStringLiteral("cp1251")
-        : QStringLiteral("raw");
-}
-
 QString detectJsonFileType(const QString &path)
 {
     QFile file(path);
@@ -80,12 +73,14 @@ ConversionResult Converter::parseBackendStatus(const QByteArray &stdoutData)
     result.outputPath = obj.value(QStringLiteral("output")).toString();
     result.mode = obj.value(QStringLiteral("mode")).toString();
     result.message = obj.value(QStringLiteral("message")).toString();
+    result.encoding = obj.value(QStringLiteral("encoding")).toString();
+    result.repairedScripts = static_cast<qint64>(obj.value(QStringLiteral("repaired_scripts")).toDouble());
     result.inputSize = static_cast<qint64>(obj.value(QStringLiteral("input_size")).toDouble());
     result.outputSize = static_cast<qint64>(obj.value(QStringLiteral("output_size")).toDouble());
     return result;
 }
 
-ConversionResult Converter::runBackend(const QStringList &arguments)
+QByteArray Converter::runBackendRaw(const QStringList &arguments)
 {
     QProcess process;
     process.setProgram(backendPath());
@@ -117,27 +112,61 @@ ConversionResult Converter::runBackend(const QStringList &arguments)
                         "Ошибка backend ArenaTES3JSON-core")
                  : error);
     }
+    return stdoutData;
+}
 
-    return parseBackendStatus(stdoutData);
+ConversionResult Converter::runBackend(const QStringList &arguments)
+{
+    return parseBackendStatus(runBackendRaw(arguments));
+}
+
+InspectionResult Converter::parseInspectionStatus(const QByteArray &stdoutData)
+{
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(stdoutData.trimmed(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        fail(l10n(systemUiLanguage(),
+                  "Backend returned invalid inspection JSON: %1\n%2",
+                  "Backend вернул некорректный JSON проверки: %1\n%2")
+             .arg(parseError.errorString(), QString::fromUtf8(stdoutData)));
+    }
+
+    const QJsonObject obj = doc.object();
+    InspectionResult result;
+    result.kind = obj.value(QStringLiteral("kind")).toString();
+    result.encoding = obj.value(QStringLiteral("encoding")).toString();
+    result.size = static_cast<qint64>(obj.value(QStringLiteral("size")).toDouble());
+    result.objects = static_cast<qint64>(obj.value(QStringLiteral("objects")).toDouble());
+    return result;
+}
+
+InspectionResult Converter::inspect(const QString &inputPath, const QString &encoding)
+{
+    return parseInspectionStatus(runBackendRaw({QStringLiteral("inspect"), inputPath,
+                                                QStringLiteral("--encoding"), encoding}));
 }
 
 ConversionResult Converter::pluginToJson(const QString &inputPath,
                                          const QString &outputPath,
                                          bool compact,
-                                         TextEncodingMode encoding)
+                                         const QString &encoding)
 {
     QStringList args{QStringLiteral("to-json"), inputPath, outputPath,
-                     QStringLiteral("--encoding"), encodingArgument(encoding)};
+                     QStringLiteral("--encoding"), encoding};
     if (compact) args << QStringLiteral("--compact");
     return runBackend(args);
 }
 
 ConversionResult Converter::jsonToPlugin(const QString &inputPath,
                                          const QString &outputPath,
-                                         TextEncodingMode encoding)
+                                         const QString &encoding,
+                                         bool repairChangedScripts)
 {
-    return runBackend({QStringLiteral("to-plugin"), inputPath, outputPath,
-                       QStringLiteral("--encoding"), encodingArgument(encoding)});
+    QStringList args{QStringLiteral("to-plugin"), inputPath, outputPath,
+                     QStringLiteral("--encoding"), encoding};
+    if (repairChangedScripts)
+        args << QStringLiteral("--repair-scripts") << QStringLiteral("changed");
+    return runBackend(args);
 }
 
 } // namespace arena::tes3json

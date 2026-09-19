@@ -1,33 +1,14 @@
-use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use chardetng::EncodingDetector;
+use encoding_rs::{Encoding, WINDOWS_1251, WINDOWS_1252};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tes3::esp::Plugin;
-
-// Windows-1251 bytes 0x80..0xFF. Undefined 0x98 is U+FFFD and is deliberately
-// not converted so the original pseudo-Latin-1 code point remains reversible.
-const CP1251_HIGH: [char; 128] = [
-    '\u{0402}', '\u{0403}', '\u{201A}', '\u{0453}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
-    '\u{20AC}', '\u{2030}', '\u{0409}', '\u{2039}', '\u{040A}', '\u{040C}', '\u{040B}', '\u{040F}',
-    '\u{0452}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
-    '\u{FFFD}', '\u{2122}', '\u{0459}', '\u{203A}', '\u{045A}', '\u{045C}', '\u{045B}', '\u{045F}',
-    '\u{00A0}', '\u{040E}', '\u{045E}', '\u{0408}', '\u{00A4}', '\u{0490}', '\u{00A6}', '\u{00A7}',
-    '\u{0401}', '\u{00A9}', '\u{0404}', '\u{00AB}', '\u{00AC}', '\u{00AD}', '\u{00AE}', '\u{0407}',
-    '\u{00B0}', '\u{00B1}', '\u{0406}', '\u{0456}', '\u{0491}', '\u{00B5}', '\u{00B6}', '\u{00B7}',
-    '\u{0451}', '\u{2116}', '\u{0454}', '\u{00BB}', '\u{0458}', '\u{0405}', '\u{0455}', '\u{0457}',
-    '\u{0410}', '\u{0411}', '\u{0412}', '\u{0413}', '\u{0414}', '\u{0415}', '\u{0416}', '\u{0417}',
-    '\u{0418}', '\u{0419}', '\u{041A}', '\u{041B}', '\u{041C}', '\u{041D}', '\u{041E}', '\u{041F}',
-    '\u{0420}', '\u{0421}', '\u{0422}', '\u{0423}', '\u{0424}', '\u{0425}', '\u{0426}', '\u{0427}',
-    '\u{0428}', '\u{0429}', '\u{042A}', '\u{042B}', '\u{042C}', '\u{042D}', '\u{042E}', '\u{042F}',
-    '\u{0430}', '\u{0431}', '\u{0432}', '\u{0433}', '\u{0434}', '\u{0435}', '\u{0436}', '\u{0437}',
-    '\u{0438}', '\u{0439}', '\u{043A}', '\u{043B}', '\u{043C}', '\u{043D}', '\u{043E}', '\u{043F}',
-    '\u{0440}', '\u{0441}', '\u{0442}', '\u{0443}', '\u{0444}', '\u{0445}', '\u{0446}', '\u{0447}',
-    '\u{0448}', '\u{0449}', '\u{044A}', '\u{044B}', '\u{044C}', '\u{044D}', '\u{044E}', '\u{044F}',
-];
-
 
 // The TES3 crate transports plugin strings through Windows-1252. ArenaTES3JSON
 // presents the same raw bytes as Windows-1251 in JSON. Therefore conversion must
@@ -61,13 +42,15 @@ struct Cli {
     input: PathBuf,
     output: PathBuf,
     compact: bool,
-    encoding: EncodingMode,
+    encoding: String,
+    repair_scripts: RepairScriptsMode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EncodingMode {
-    Cp1251,
-    Raw,
+enum RepairScriptsMode {
+    Off,
+    Changed,
+    All,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,16 +72,18 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command.as_str() {
         "to-json" => to_json(&cli)?,
         "to-plugin" => to_plugin(&cli)?,
+        "inspect" => inspect_input(&cli)?,
         _ => return Err(format!("unknown command: {}", cli.command).into()),
     }
     Ok(())
 }
 
 fn usage() -> &'static str {
-    "ArenaTES3JSON-core 0.3.6\n\
+    "ArenaTES3JSON-core 0.4.0\n\
      Usage:\n\
-       ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding cp1251|raw]\n\
-       ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding cp1251|raw]\n"
+       ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding auto|LABEL]\n\
+       ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding auto|LABEL] [--repair-scripts off|changed|all]\n\
+       ArenaTES3JSON-core inspect INPUT.esm [--encoding auto|LABEL]\n"
 }
 
 fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
@@ -108,18 +93,19 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ArenaTES3JSON-core 0.3.6");
+        println!("ArenaTES3JSON-core 0.4.0");
         std::process::exit(0);
     }
 
     let command = args[0].clone();
-    if !matches!(command.as_str(), "to-json" | "to-plugin") {
+    if !matches!(command.as_str(), "to-json" | "to-plugin" | "inspect") {
         return Err(format!("unknown command: {command}").into());
     }
 
     let mut positional = Vec::new();
     let mut compact = false;
-    let mut encoding = EncodingMode::Cp1251;
+    let mut encoding = String::from("auto");
+    let mut repair_scripts = RepairScriptsMode::Off;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -127,10 +113,17 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
             "--encoding" => {
                 i += 1;
                 let value = args.get(i).ok_or("--encoding requires a value")?;
-                encoding = match value.as_str() {
-                    "cp1251" | "windows-1251" | "1c" => EncodingMode::Cp1251,
-                    "raw" | "none" => EncodingMode::Raw,
-                    _ => return Err(format!("unsupported encoding mode: {value}").into()),
+                encoding = value.to_owned();
+                validate_encoding_label(&encoding)?;
+            }
+            "--repair-scripts" => {
+                i += 1;
+                let value = args.get(i).ok_or("--repair-scripts requires off|changed|all")?;
+                repair_scripts = match value.as_str() {
+                    "off" => RepairScriptsMode::Off,
+                    "changed" => RepairScriptsMode::Changed,
+                    "all" => RepairScriptsMode::All,
+                    _ => return Err(format!("unsupported --repair-scripts mode: {value}").into()),
                 };
             }
             value if value.starts_with('-') => return Err(format!("unknown option: {value}").into()),
@@ -139,16 +132,22 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    if positional.len() < 2 {
-        return Err("missing input or output file".into());
+    let required = if command == "inspect" { 1 } else { 2 };
+    if positional.len() < required {
+        return Err(if command == "inspect" {
+            "missing input file".into()
+        } else {
+            "missing input or output file".into()
+        });
     }
 
     Ok(Cli {
         command,
         input: positional[0].clone(),
-        output: positional[1].clone(),
+        output: positional.get(1).cloned().unwrap_or_default(),
         compact,
         encoding,
+        repair_scripts,
     })
 }
 
@@ -157,34 +156,37 @@ fn report_progress(percent: u8, stage: &str) {
     let _ = io::stderr().flush();
 }
 
-fn emit_status(command: &str, mode: &str, output: &Path, input_size: u64, output_size: u64, message: &str) {
-    let status = serde_json::json!({
-        "ok": true,
-        "command": command,
-        "mode": mode,
-        "output": output.display().to_string(),
-        "input_size": input_size,
-        "output_size": output_size,
-        "message": message,
-    });
-    println!("{}", status);
-}
 
 fn to_json(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     report_progress(4, "read-plugin");
     let input_size = fs::metadata(&cli.input)?.len();
+    let original_bytes = fs::read(&cli.input)?;
 
     report_progress(12, "parse-plugin");
     let mut plugin = Plugin::new();
     plugin.load_path(&cli.input)?;
 
-    report_progress(58, "serialize-json");
-    // Do not sort. The supplied MFR.json and tes3conv preserve plugin object order.
-    let raw_json = serde_json::to_string(&plugin.objects)?;
-    let mut value: Value = serde_json::from_str(&raw_json)?;
+    report_progress(34, "analyze-binary-roundtrip");
+    let normalized_path = temporary_plugin_path(&cli.input);
+    let _ = fs::remove_file(&normalized_path);
+    plugin.save_path(&normalized_path)?;
+    let normalized_bytes = fs::read(&normalized_path)?;
+    let _ = fs::remove_file(&normalized_path);
+    let binary_metadata = build_binary_metadata(&original_bytes, &normalized_bytes)?;
+    drop(original_bytes);
+    drop(normalized_bytes);
 
-    report_progress(70, "decode-windows-1251");
-    transform_export_value(&mut value, cli.encoding);
+    report_progress(52, "serialize-json");
+    let mut value = serde_json::to_value(&plugin.objects)?;
+    drop(plugin);
+
+    let selected_encoding = resolve_export_encoding(&cli.encoding, &value)?;
+    report_progress(65, "decode-text");
+    transform_export_value(&mut value, selected_encoding)?;
+
+    attach_header_encoding(&mut value, selected_encoding.name())?;
+    attach_script_source_hashes(&mut value)?;
+    attach_binary_metadata(&mut value, &binary_metadata)?;
 
     report_progress(86, "write-json");
     let json = if cli.compact {
@@ -195,57 +197,101 @@ fn to_json(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     atomic_write(&cli.output, json.as_bytes())?;
 
     report_progress(100, "done");
-    emit_status(
+    emit_status_extra(
         "to-json",
-        "semantic-json",
+        "semantic-json-lossless-delta",
         &cli.output,
         input_size,
         json.len() as u64,
-        "tes3conv-compatible semantic JSON written",
+        "semantic JSON written with compact binary-preservation metadata",
+        Some(selected_encoding.name()),
+        None,
     );
     Ok(())
 }
 
 fn to_plugin(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     report_progress(4, "read-json");
-    let json = fs::read_to_string(&cli.input)?;
+    let json_text = fs::read_to_string(&cli.input)?;
+    let json_input_size = json_text.len() as u64;
 
-    report_progress(15, "parse-json");
-    let mut value: Value = serde_json::from_str(&json)?;
+    report_progress(12, "parse-json");
+    let mut value: Value = serde_json::from_str(&json_text)?;
+    drop(json_text);
+    let selected_encoding = resolve_import_encoding(&cli.encoding, &value)?;
+    let binary_metadata = detach_binary_metadata(&mut value)?;
+    let repaired_script_indices = repair_scripts_if_requested(&mut value, cli.repair_scripts)?;
+    let repaired_scripts = repaired_script_indices.len();
+    remove_arena_metadata(&mut value)?;
     let reference_counts = collect_reference_count_expectations(&value)?;
 
-    report_progress(30, "encode-windows-1251");
-    transform_import_value(&mut value, cli.encoding);
+    report_progress(28, "encode-text");
+    transform_import_value(&mut value, selected_encoding)?;
 
-    report_progress(48, "deserialize-plugin");
-    let tes3_json = serde_json::to_string(&value)?;
+    report_progress(44, "deserialize-plugin");
     let mut plugin = Plugin::new();
-    plugin.objects = serde_json::from_str(&tes3_json)?;
+    plugin.objects = serde_json::from_value(value)?;
 
-    report_progress(68, "write-plugin");
+    report_progress(64, "write-plugin");
     plugin.save_path(&cli.output)?;
 
-    report_progress(84, "restore-reference-counts");
-    let restored = restore_explicit_reference_counts(&cli.output, &reference_counts)?;
+    report_progress(76, "restore-reference-counts");
+    let restored_nam9 = restore_explicit_reference_counts(&cli.output, &reference_counts)?;
+
+    report_progress(84, "restore-binary-details");
+    let binary_repairs = apply_binary_metadata_to_file(&cli.output, &binary_metadata, &repaired_script_indices)?;
 
     report_progress(96, "finish");
     let output_size = fs::metadata(&cli.output)?.len();
     report_progress(100, "done");
-    let message = if restored == 0 {
-        "plugin rebuilt from semantic JSON".to_owned()
-    } else {
-        format!(
-            "plugin rebuilt from semantic JSON; restored {restored} explicit CELL reference object_count/NAM9 subrecords"
-        )
-    };
-    emit_status(
+    let message = format!(
+        "plugin rebuilt; encoding={}; script repairs={}; binary repairs={}; NAM9 restored={}",
+        selected_encoding.name(), repaired_scripts, binary_repairs, restored_nam9
+    );
+    emit_status_extra(
         "to-plugin",
         "semantic-rebuild",
         &cli.output,
-        json.len() as u64,
+        json_input_size,
         output_size,
         &message,
+        Some(selected_encoding.name()),
+        Some(repaired_scripts as u64),
     );
+    Ok(())
+}
+
+fn inspect_input(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let ext = cli.input.extension().and_then(OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+    let input_size = fs::metadata(&cli.input)?.len();
+    if ext == "json" {
+        let text = fs::read_to_string(&cli.input)?;
+        let value: Value = serde_json::from_str(&text)?;
+        let enc = resolve_import_encoding(&cli.encoding, &value)?;
+        let objects = value.as_array().map(|v| v.len()).unwrap_or(0);
+        println!("{}", json!({
+            "ok": true,
+            "command": "inspect",
+            "kind": "JSON",
+            "size": input_size,
+            "encoding": enc.name(),
+            "objects": objects,
+        }));
+        return Ok(());
+    }
+
+    let mut plugin = Plugin::new();
+    plugin.load_path(&cli.input)?;
+    let value = serde_json::to_value(&plugin.objects)?;
+    let enc = resolve_export_encoding(&cli.encoding, &value)?;
+    println!("{}", json!({
+        "ok": true,
+        "command": "inspect",
+        "kind": ext.to_ascii_uppercase(),
+        "size": input_size,
+        "encoding": enc.name(),
+        "objects": plugin.objects.len(),
+    }));
     Ok(())
 }
 
@@ -569,89 +615,724 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-fn transform_export_text(input: &str, mode: EncodingMode) -> String {
-    if mode == EncodingMode::Raw {
-        return input.to_owned();
+
+fn validate_encoding_label(label: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(label.to_ascii_lowercase().as_str(), "auto" | "raw" | "none") {
+        return Ok(());
     }
-    input.chars().map(cp1251_from_transport_char).collect()
+    if Encoding::for_label(label.as_bytes()).is_some() {
+        return Ok(());
+    }
+    Err(format!("unsupported encoding label: {label}").into())
 }
 
-fn transform_import_text(input: &str, mode: EncodingMode) -> String {
-    if mode == EncodingMode::Raw {
-        return input.to_owned();
+fn resolve_export_encoding(label: &str, value: &Value) -> Result<&'static Encoding, Box<dyn std::error::Error>> {
+    let lower = label.to_ascii_lowercase();
+    if lower == "raw" || lower == "none" {
+        return Ok(WINDOWS_1252);
     }
-    let mut out = String::with_capacity(input.len());
+    if lower != "auto" {
+        return Encoding::for_label(label.as_bytes()).ok_or_else(|| format!("unsupported encoding label: {label}").into());
+    }
+    let mut bytes = Vec::new();
+    collect_transport_bytes(value, &mut bytes);
+    if bytes.is_empty() {
+        return Ok(WINDOWS_1252);
+    }
+    let mut detector = EncodingDetector::new();
+    detector.feed(&bytes, true);
+    let guessed = detector.guess(None, true);
+    // chardetng can be conservative for Cyrillic game data. Prefer CP1251 when
+    // the same bytes decode to a substantial amount of Cyrillic text.
+    let (cp1251_text, _, _) = WINDOWS_1251.decode(&bytes);
+    let cyr = cp1251_text.chars().filter(|c| ('\u{0400}'..='\u{052F}').contains(c)).count();
+    let letters = cp1251_text.chars().filter(|c| c.is_alphabetic()).count();
+    if letters > 20 && cyr * 3 > letters {
+        return Ok(WINDOWS_1251);
+    }
+    Ok(guessed)
+}
+
+fn resolve_import_encoding(label: &str, value: &Value) -> Result<&'static Encoding, Box<dyn std::error::Error>> {
+    let lower = label.to_ascii_lowercase();
+    if lower == "raw" || lower == "none" {
+        return Ok(WINDOWS_1252);
+    }
+    if lower != "auto" {
+        return Encoding::for_label(label.as_bytes()).ok_or_else(|| format!("unsupported encoding label: {label}").into());
+    }
+    if let Some(enc) = stored_header_encoding(value) {
+        if let Some(found) = Encoding::for_label(enc.as_bytes()) {
+            return Ok(found);
+        }
+    }
+    let mut cyr = 0usize;
+    let mut greek = 0usize;
+    let mut hebrew = 0usize;
+    let mut arabic = 0usize;
+    scan_unicode_scripts(value, &mut cyr, &mut greek, &mut hebrew, &mut arabic);
+    if cyr > 0 { return Ok(WINDOWS_1251); }
+    if greek > 0 { return Ok(encoding_rs::WINDOWS_1253); }
+    if hebrew > 0 { return Ok(encoding_rs::WINDOWS_1255); }
+    if arabic > 0 { return Ok(encoding_rs::WINDOWS_1256); }
+    Ok(WINDOWS_1252)
+}
+
+fn stored_header_encoding(value: &Value) -> Option<String> {
+    value.as_array()?.iter().find_map(|o| {
+        if o.get("type").and_then(Value::as_str) == Some("Header") {
+            o.get("_arena_encoding").and_then(Value::as_str).map(ToOwned::to_owned)
+        } else { None }
+    })
+}
+
+fn attach_header_encoding(value: &mut Value, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
+    if let Some(header) = objects.iter_mut().find(|o| o.get("type").and_then(Value::as_str) == Some("Header")) {
+        if let Some(map) = header.as_object_mut() {
+            map.insert("_arena_encoding".into(), Value::String(name.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+fn scan_unicode_scripts(value: &Value, cyr: &mut usize, greek: &mut usize, hebrew: &mut usize, arabic: &mut usize) {
+    match value {
+        Value::String(s) => for ch in s.chars() {
+            let u = ch as u32;
+            if (0x0400..=0x052F).contains(&u) { *cyr += 1; }
+            if (0x0370..=0x03FF).contains(&u) { *greek += 1; }
+            if (0x0590..=0x05FF).contains(&u) { *hebrew += 1; }
+            if (0x0600..=0x06FF).contains(&u) { *arabic += 1; }
+        },
+        Value::Array(a) => for v in a { scan_unicode_scripts(v,cyr,greek,hebrew,arabic); },
+        Value::Object(m) => for (k,v) in m { if !k.starts_with("_arena_") { scan_unicode_scripts(v,cyr,greek,hebrew,arabic); } },
+        _ => {}
+    }
+}
+
+fn collect_transport_bytes(value: &Value, out: &mut Vec<u8>) {
+    match value {
+        Value::String(s) => {
+            if s.len() > 3 && !looks_like_base64(s) {
+                for ch in s.chars() {
+                    if let Some(b) = transport_char_to_byte(ch) { out.push(b); }
+                }
+                out.push(b'\n');
+            }
+        }
+        Value::Array(a) => for v in a { collect_transport_bytes(v, out); },
+        Value::Object(m) => for (k,v) in m { if !k.starts_with("_arena_") { collect_transport_bytes(v, out); } },
+        _ => {}
+    }
+}
+
+fn looks_like_base64(s: &str) -> bool {
+    s.len() >= 8 && s.len() % 4 == 0 && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b,b'+'|b'/'|b'='))
+}
+
+fn transport_char_to_byte(c: char) -> Option<u8> {
+    if c.is_ascii() { return Some(c as u8); }
+    CP1252_HIGH.iter().position(|x| *x == c).map(|i| (i + 0x80) as u8)
+}
+
+fn byte_to_transport_char(b: u8) -> char {
+    if b < 0x80 { b as char } else { CP1252_HIGH[(b - 0x80) as usize] }
+}
+
+fn transform_export_text(input: &str, encoding: &'static Encoding) -> Result<String, Box<dyn std::error::Error>> {
+    if encoding == WINDOWS_1252 { return Ok(input.to_owned()); }
+    let mut bytes = Vec::with_capacity(input.len());
     for c in input.chars() {
-        if let Some(transport) = transport_char_from_cp1251(c) {
-            out.push(transport);
+        if let Some(b) = transport_char_to_byte(c) { bytes.push(b); }
+        else { return Err(format!("TES3 transport character U+{:04X} cannot be mapped to a raw byte", c as u32).into()); }
+    }
+    let (decoded, _, _) = encoding.decode(&bytes);
+    Ok(decoded.into_owned())
+}
+
+fn transform_import_text(input: &str, encoding: &'static Encoding) -> Result<String, Box<dyn std::error::Error>> {
+    if encoding == WINDOWS_1252 { return Ok(input.to_owned()); }
+    let (encoded, _, had_errors) = encoding.encode(input);
+    if had_errors {
+        return Err(format!("text contains characters that cannot be encoded as {}: {:?}", encoding.name(), input.chars().take(80).collect::<String>()).into());
+    }
+    Ok(encoded.iter().map(|b| byte_to_transport_char(*b)).collect())
+}
+
+fn transform_export_value(value: &mut Value, encoding: &'static Encoding) -> Result<(), Box<dyn std::error::Error>> {
+    match value {
+        Value::String(text) => *text = transform_export_text(text, encoding)?,
+        Value::Array(items) => for item in items { transform_export_value(item, encoding)?; },
+        Value::Object(map) => for (key,item) in map.iter_mut() { if !key.starts_with("_arena_") { transform_export_value(item, encoding)?; } },
+        _ => {}
+    }
+    Ok(())
+}
+
+fn transform_import_value(value: &mut Value, encoding: &'static Encoding) -> Result<(), Box<dyn std::error::Error>> {
+    match value {
+        Value::String(text) => *text = transform_import_text(text, encoding)?,
+        Value::Array(items) => for item in items { transform_import_value(item, encoding)?; },
+        Value::Object(map) => for (key,item) in map.iter_mut() { if !key.starts_with("_arena_") { transform_import_value(item, encoding)?; } },
+        _ => {}
+    }
+    Ok(())
+}
+
+fn emit_status_extra(command: &str, mode: &str, output: &Path, input_size: u64, output_size: u64, message: &str, encoding: Option<&str>, repaired_scripts: Option<u64>) {
+    let mut status = json!({
+        "ok": true, "command": command, "mode": mode, "output": output.display().to_string(),
+        "input_size": input_size, "output_size": output_size, "message": message,
+    });
+    if let Some(map) = status.as_object_mut() {
+        if let Some(e) = encoding { map.insert("encoding".into(), Value::String(e.to_owned())); }
+        if let Some(n) = repaired_scripts { map.insert("repaired_scripts".into(), Value::Number(n.into())); }
+    }
+    println!("{}", status);
+}
+
+fn fnv1a64_bytes(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+    format!("{h:016x}")
+}
+
+fn fnv1a64(text: &str) -> String { fnv1a64_bytes(text.as_bytes()) }
+
+fn attach_script_source_hashes(value: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
+    let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
+    for o in objects {
+        if o.get("type").and_then(Value::as_str) != Some("Script") { continue; }
+        let text = o.get("text").and_then(Value::as_str).unwrap_or("");
+        let hash = fnv1a64(text);
+        if let Some(m) = o.as_object_mut() { m.insert("_arena_source_hash".into(), Value::String(hash)); }
+    }
+    Ok(())
+}
+
+fn parse_script_variables(src: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut shorts=Vec::new(); let mut longs=Vec::new(); let mut floats=Vec::new(); let mut seen=HashSet::new();
+    for line in src.lines() {
+        let code = line.split(';').next().unwrap_or("").trim();
+        let mut it = code.split_whitespace();
+        let ty = it.next().unwrap_or("").to_ascii_lowercase();
+        if !matches!(ty.as_str(), "short"|"long"|"float") { continue; }
+        let name = it.next().unwrap_or("");
+        let mut chars = name.chars();
+        let valid_start = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        let valid_rest = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid_start || !valid_rest || !seen.insert(name.to_ascii_lowercase()) { continue; }
+        match ty.as_str() { "short"=>shorts.push(name.to_owned()), "long"=>longs.push(name.to_owned()), _=>floats.push(name.to_owned()) }
+    }
+    (shorts,longs,floats)
+}
+
+fn serde_byte_vec_base64(raw: &[u8]) -> String {
+    let mut wrapped=Vec::with_capacity(raw.len()+4);
+    wrapped.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+    wrapped.extend_from_slice(raw);
+    BASE64.encode(wrapped)
+}
+
+fn repair_one_script(obj: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
+    let text = obj.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+    let (shorts,longs,floats)=parse_script_variables(&text);
+    let mut scvr=Vec::new();
+    for n in shorts.iter().chain(longs.iter()).chain(floats.iter()) { scvr.extend_from_slice(n.as_bytes()); scvr.push(0); }
+    if let Some(map)=obj.as_object_mut() {
+        map.insert("variables".into(), Value::String(serde_byte_vec_base64(&scvr)));
+        // Lightweight TES3ZER0EDIT-compatible repair: clear stale SCDT and rebuild
+        // SCHD/SCVR. A true vanilla TESCS opcode compiler is not embedded.
+        map.insert("bytecode".into(), Value::String(serde_byte_vec_base64(&[])));
+        let header = map.entry("header").or_insert_with(|| json!({}));
+        if let Some(h)=header.as_object_mut() {
+            h.insert("num_shorts".into(), Value::Number((shorts.len() as u64).into()));
+            h.insert("num_longs".into(), Value::Number((longs.len() as u64).into()));
+            h.insert("num_floats".into(), Value::Number((floats.len() as u64).into()));
+            h.insert("bytecode_length".into(), Value::Number(0u64.into()));
+            h.insert("variables_length".into(), Value::Number((scvr.len() as u64).into()));
+        }
+    }
+    Ok(())
+}
+
+fn repair_scripts_if_requested(
+    value: &mut Value,
+    mode: RepairScriptsMode,
+) -> Result<HashSet<usize>, Box<dyn std::error::Error>> {
+    let mut repaired = HashSet::new();
+    if mode == RepairScriptsMode::Off {
+        return Ok(repaired);
+    }
+
+    let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
+    for (index, object) in objects.iter_mut().enumerate() {
+        if object.get("type").and_then(Value::as_str) != Some("Script") {
+            continue;
+        }
+
+        let current = fnv1a64(object.get("text").and_then(Value::as_str).unwrap_or(""));
+        let original = object.get("_arena_source_hash").and_then(Value::as_str);
+        let should_repair = match mode {
+            RepairScriptsMode::Off => false,
+            RepairScriptsMode::All => true,
+            // For ArenaTES3JSON-exported JSON we can tell precisely whether SCTX
+            // changed. For third-party tes3conv JSON there is no source hash, so
+            // Changed mode deliberately leaves bytecode alone rather than guessing.
+            RepairScriptsMode::Changed => original.map(|hash| hash != current).unwrap_or(false),
+        };
+
+        if should_repair {
+            repair_one_script(object)?;
+            repaired.insert(index);
+        }
+    }
+    Ok(repaired)
+}
+
+fn remove_arena_metadata(value: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
+    let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
+    for o in objects { if let Some(m)=o.as_object_mut() { m.remove("_arena_encoding"); m.remove("_arena_source_hash"); m.remove("_arena_binary"); } }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct RawSub { tag:[u8;4], payload:Vec<u8> }
+#[derive(Clone)]
+struct RawRecord { tag:[u8;4], header_tail:[u8;8], subs:Vec<RawSub> }
+
+fn parse_records(data:&[u8]) -> io::Result<Vec<RawRecord>> {
+    let mut out=Vec::new(); let mut off=0usize;
+    while off<data.len() {
+        if data.len()-off<16 { return Err(invalid_data("truncated record header")); }
+        let mut tag=[0;4]; tag.copy_from_slice(&data[off..off+4]);
+        let size=read_u32_le(data,off+4)? as usize; let end=off+16+size;
+        if end>data.len() { return Err(invalid_data("truncated record")); }
+        let mut tail=[0;8]; tail.copy_from_slice(&data[off+8..off+16]);
+        let spans=parse_subrecords(&data[off+16..end])?;
+        let subs=spans.into_iter().map(|sp| RawSub{tag:sp.tag,payload:data[off+16+sp.payload_start..off+16+sp.payload_start+sp.payload_len].to_vec()}).collect();
+        out.push(RawRecord{tag,header_tail:tail,subs}); off=end;
+    }
+    Ok(out)
+}
+
+fn write_records(records:&[RawRecord]) -> io::Result<Vec<u8>> {
+    let mut out=Vec::new();
+    for r in records {
+        let body_len:usize=r.subs.iter().map(|s|8+s.payload.len()).sum();
+        out.extend_from_slice(&r.tag); out.extend_from_slice(&(u32::try_from(body_len).map_err(|_|invalid_data("record too large"))?).to_le_bytes()); out.extend_from_slice(&r.header_tail);
+        for s in &r.subs { out.extend_from_slice(&s.tag); out.extend_from_slice(&(u32::try_from(s.payload.len()).map_err(|_|invalid_data("subrecord too large"))?).to_le_bytes()); out.extend_from_slice(&s.payload); }
+    }
+    Ok(out)
+}
+
+fn tag_string(tag:[u8;4])->String { String::from_utf8_lossy(&tag).to_string() }
+fn hex_encode(bytes:&[u8])->String { const H:&[u8;16]=b"0123456789abcdef"; let mut s=String::with_capacity(bytes.len()*2); for b in bytes { s.push(H[(b>>4) as usize] as char); s.push(H[(b&15) as usize] as char); } s }
+fn hex_decode(s:&str)->io::Result<Vec<u8>> { if s.len()%2!=0{return Err(invalid_data("odd hex length"));} let b=s.as_bytes(); let mut out=Vec::with_capacity(b.len()/2); for i in (0..b.len()).step_by(2){ let h=(b[i] as char).to_digit(16).ok_or_else(||invalid_data("bad hex"))?; let l=(b[i+1] as char).to_digit(16).ok_or_else(||invalid_data("bad hex"))?; out.push(((h<<4)|l) as u8);} Ok(out) }
+
+fn find_occurrence(subs:&[RawSub], tag:[u8;4], occ:usize)->Option<usize> { let mut n=0; for (i,s) in subs.iter().enumerate(){if s.tag==tag{if n==occ{return Some(i)} n+=1;}} None }
+fn parse_tag(s:&str)->io::Result<[u8;4]>{ let b=s.as_bytes(); if b.len()!=4{return Err(invalid_data("tag must be 4 bytes"));} let mut t=[0;4];t.copy_from_slice(b);Ok(t)}
+
+fn build_binary_metadata(original: &[u8], normalized: &[u8]) -> io::Result<Vec<Option<Value>>> {
+    let original_records = parse_records(original)?;
+    let normalized_records = parse_records(normalized)?;
+    if original_records.len() != normalized_records.len() {
+        return Err(invalid_data(format!(
+            "writer changed record count {} -> {}",
+            original_records.len(),
+            normalized_records.len()
+        )));
+    }
+
+    let mut result = Vec::with_capacity(original_records.len());
+    for (original_record, normalized_record) in original_records.iter().zip(normalized_records.iter()) {
+        if original_record.tag != normalized_record.tag {
+            return Err(invalid_data("writer changed record order/type"));
+        }
+
+        let mut operations = Vec::new();
+        let mut header_changes = Vec::new();
+        for index in 0..8 {
+            if original_record.header_tail[index] != normalized_record.header_tail[index] {
+                header_changes.push(json!([
+                    index,
+                    normalized_record.header_tail[index],
+                    original_record.header_tail[index]
+                ]));
+            }
+        }
+
+        let mut tags = HashSet::<[u8; 4]>::new();
+        for sub in &original_record.subs {
+            tags.insert(sub.tag);
+        }
+        for sub in &normalized_record.subs {
+            tags.insert(sub.tag);
+        }
+        let mut tags: Vec<_> = tags.into_iter().collect();
+        tags.sort_unstable();
+
+        for tag in tags {
+            // CELL/NAM9 is handled from the semantic object_count field below.
+            // Keeping it out of generic raw metadata means deleting/changing
+            // object_count in JSON is respected instead of being resurrected
+            // by an old insert patch.
+            if original_record.tag == *b"CELL" && tag == *b"NAM9" {
+                continue;
+            }
+
+            let original: Vec<_> = original_record
+                .subs
+                .iter()
+                .enumerate()
+                .filter(|(_, sub)| sub.tag == tag)
+                .collect();
+            let normalized: Vec<_> = normalized_record
+                .subs
+                .iter()
+                .enumerate()
+                .filter(|(_, sub)| sub.tag == tag)
+                .collect();
+            let common = original.len().min(normalized.len());
+
+            for occurrence in 0..common {
+                let original_payload = &original[occurrence].1.payload;
+                let normalized_payload = &normalized[occurrence].1.payload;
+                if original_payload == normalized_payload {
+                    continue;
+                }
+
+                // The semantic writer often normalizes an unterminated string by
+                // appending a trailing NUL. Keep a tiny guarded instruction rather
+                // than storing the whole original string again.
+                if normalized_payload.len() == original_payload.len() + 1
+                    && normalized_payload.starts_with(original_payload)
+                    && normalized_payload.last() == Some(&0)
+                {
+                    operations.push(json!({
+                        "op": "strip_nul",
+                        "tag": tag_string(tag),
+                        "occ": occurrence,
+                        "from_len": normalized_payload.len(),
+                        "from_hash": fnv1a64_bytes(normalized_payload)
+                    }));
+                } else if original_payload.len() == normalized_payload.len() {
+                    let changes: Vec<Value> = original_payload
+                        .iter()
+                        .zip(normalized_payload.iter())
+                        .enumerate()
+                        .filter_map(|(index, (original_byte, normalized_byte))| {
+                            (original_byte != normalized_byte)
+                                .then(|| json!([index, *normalized_byte, *original_byte]))
+                        })
+                        .collect();
+                    operations.push(json!({
+                        "op": "bytes",
+                        "tag": tag_string(tag),
+                        "occ": occurrence,
+                        "changes": changes
+                    }));
+                } else {
+                    operations.push(json!({
+                        "op": "replace",
+                        "tag": tag_string(tag),
+                        "occ": occurrence,
+                        "from": hex_encode(normalized_payload),
+                        "to": hex_encode(original_payload)
+                    }));
+                }
+            }
+
+            // Present in the original but discarded by the semantic writer. This
+            // covers empty NPC_:ANAM/ACTI:FNAM/LIGH:MODL and any future equivalent.
+            for occurrence in common..original.len() {
+                let (index, sub) = original[occurrence];
+                operations.push(json!({
+                    "op": "insert",
+                    "tag": tag_string(tag),
+                    "occ": occurrence,
+                    "index": index,
+                    "payload": hex_encode(&sub.payload)
+                }));
+            }
+
+            // Invented by the semantic writer although absent in the source. This
+            // covers e.g. default NPC_:AIDT and LAND:VTEX blocks.
+            for occurrence in common..normalized.len() {
+                let (_, sub) = normalized[occurrence];
+                operations.push(json!({
+                    "op": "remove",
+                    "tag": tag_string(tag),
+                    "occ": occurrence,
+                    "payload": hex_encode(&sub.payload)
+                }));
+            }
+        }
+
+        let original_order: Vec<String> = original_record.subs.iter().map(|s| tag_string(s.tag)).collect();
+        let normalized_order: Vec<String> = normalized_record.subs.iter().map(|s| tag_string(s.tag)).collect();
+        let order = (original_order != normalized_order).then_some(original_order);
+
+        if operations.is_empty() && header_changes.is_empty() && order.is_none() {
+            result.push(None);
         } else {
-            out.push(c);
+            let mut metadata = json!({
+                "v": 1,
+                "record": tag_string(original_record.tag),
+                "header": header_changes,
+                "subs": operations
+            });
+            if let (Some(map), Some(order)) = (metadata.as_object_mut(), order) {
+                map.insert("order".into(), serde_json::to_value(order).unwrap());
+            }
+            result.push(Some(metadata));
         }
     }
-    out
+    Ok(result)
 }
 
-fn transform_export_value(value: &mut Value, mode: EncodingMode) {
-    match value {
-        Value::String(text) => *text = transform_export_text(text, mode),
-        Value::Array(items) => {
-            for item in items {
-                transform_export_value(item, mode);
-            }
-        }
-        Value::Object(map) => {
-            for item in map.values_mut() {
-                transform_export_value(item, mode);
-            }
-        }
-        _ => {}
+fn attach_binary_metadata(
+    value: &mut Value,
+    metadata: &[Option<Value>],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
+    if objects.len() != metadata.len() {
+        return Err(format!(
+            "object/record count mismatch {} vs {}",
+            objects.len(),
+            metadata.len()
+        )
+        .into());
     }
+    for (object, item) in objects.iter_mut().zip(metadata) {
+        if let (Some(item), Some(map)) = (item, object.as_object_mut()) {
+            map.insert("_arena_binary".into(), item.clone());
+        }
+    }
+    Ok(())
 }
 
-fn transform_import_value(value: &mut Value, mode: EncodingMode) {
-    match value {
-        Value::String(text) => *text = transform_import_text(text, mode),
-        Value::Array(items) => {
-            for item in items {
-                transform_import_value(item, mode);
-            }
-        }
-        Value::Object(map) => {
-            for item in map.values_mut() {
-                transform_import_value(item, mode);
-            }
-        }
-        _ => {}
+fn detach_binary_metadata(
+    value: &mut Value,
+) -> Result<Vec<Option<Value>>, Box<dyn std::error::Error>> {
+    let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
+    let mut metadata = Vec::with_capacity(objects.len());
+    for object in objects {
+        metadata.push(object.as_object_mut().and_then(|map| map.remove("_arena_binary")));
     }
+    Ok(metadata)
 }
 
-fn cp1251_from_transport_char(c: char) -> char {
-    if c.is_ascii() {
-        return c;
+fn reorder_subrecords(subs: &mut Vec<RawSub>, order: &[Value]) -> io::Result<bool> {
+    if order.len() != subs.len() {
+        return Ok(false);
     }
 
-    // Find which byte the TES3 crate's Windows-1252 string represents, then
-    // interpret that exact byte as Windows-1251 for the JSON view.
-    if let Some(idx) = CP1252_HIGH.iter().position(|mapped| *mapped == c) {
-        let mapped = CP1251_HIGH[idx];
-        if mapped != '\u{FFFD}' {
-            return mapped;
-        }
+    let mut actual_counts: HashMap<[u8; 4], usize> = HashMap::new();
+    for sub in subs.iter() {
+        *actual_counts.entry(sub.tag).or_default() += 1;
     }
-    c
+    let mut desired_tags = Vec::with_capacity(order.len());
+    let mut desired_counts: HashMap<[u8; 4], usize> = HashMap::new();
+    for item in order {
+        let tag = parse_tag(item.as_str().ok_or_else(|| invalid_data("bad subrecord order tag"))?)?;
+        desired_tags.push(tag);
+        *desired_counts.entry(tag).or_default() += 1;
+    }
+    if actual_counts != desired_counts {
+        return Ok(false);
+    }
+
+    let mut buckets: HashMap<[u8; 4], VecDeque<RawSub>> = HashMap::new();
+    for sub in subs.drain(..) {
+        buckets.entry(sub.tag).or_default().push_back(sub);
+    }
+
+    let mut reordered = Vec::with_capacity(desired_tags.len());
+    for tag in desired_tags {
+        let sub = buckets
+            .get_mut(&tag)
+            .and_then(|bucket| bucket.pop_front())
+            .ok_or_else(|| invalid_data("subrecord order count changed unexpectedly"))?;
+        reordered.push(sub);
+    }
+    *subs = reordered;
+    Ok(true)
 }
 
-fn transport_char_from_cp1251(c: char) -> Option<char> {
-    if c.is_ascii() {
-        return None;
+fn apply_binary_metadata_to_file(
+    path: &Path,
+    metadata: &[Option<Value>],
+    skip_record_indices: &HashSet<usize>,
+) -> io::Result<usize> {
+    if metadata.iter().all(Option::is_none) {
+        return Ok(0);
     }
 
-    // Reverse of cp1251_from_transport_char(): choose the Windows-1252
-    // character that the TES3 writer will encode to the same byte value.
-    CP1251_HIGH
-        .iter()
-        .position(|mapped| *mapped == c && *mapped != '\u{FFFD}')
-        .map(|idx| CP1252_HIGH[idx])
+    let bytes = fs::read(path)?;
+    let mut records = parse_records(&bytes)?;
+    if records.len() != metadata.len() {
+        return Err(invalid_data("output record count differs from JSON metadata"));
+    }
+
+    let mut repairs = 0usize;
+    for (record_index, (record, meta)) in records.iter_mut().zip(metadata).enumerate() {
+        if skip_record_indices.contains(&record_index) {
+            // Script source was deliberately changed/repaired. Never restore its
+            // old SCHD/SCVR/SCDT/SCTX representation over the new script data.
+            continue;
+        }
+        let Some(meta) = meta else { continue };
+
+        if let Some(expected_tag) = meta.get("record").and_then(Value::as_str) {
+            if tag_string(record.tag) != expected_tag {
+                // User changed the semantic object type/order. Do not apply raw
+                // metadata to a different record.
+                continue;
+            }
+        }
+
+        if let Some(changes) = meta.get("header").and_then(Value::as_array) {
+            for change in changes {
+                let fields = change.as_array().ok_or_else(|| invalid_data("bad header patch"))?;
+                if fields.len() != 3 { continue; }
+                let Some(index_u64) = fields[0].as_u64() else { continue };
+                let Some(from_u64) = fields[1].as_u64() else { continue };
+                let Some(to_u64) = fields[2].as_u64() else { continue };
+                if index_u64 >= 8 || from_u64 > u8::MAX as u64 || to_u64 > u8::MAX as u64 { continue; }
+                let index = index_u64 as usize;
+                let from = from_u64 as u8;
+                let to = to_u64 as u8;
+                if record.header_tail[index] == from {
+                    record.header_tail[index] = to;
+                    repairs += 1;
+                }
+            }
+        }
+
+        let operations = meta
+            .get("subs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        // Payload repairs are guarded by the writer-produced byte(s). If a user
+        // edited the corresponding semantic value, the guard no longer matches and
+        // the edit wins instead of being overwritten by raw preservation data.
+        for operation in operations.iter().filter(|op| {
+            !matches!(op.get("op").and_then(Value::as_str), Some("insert") | Some("remove"))
+        }) {
+            let kind = operation.get("op").and_then(Value::as_str).unwrap_or("");
+            let tag = parse_tag(operation.get("tag").and_then(Value::as_str).unwrap_or("????"))?;
+            let occurrence = operation.get("occ").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let Some(index) = find_occurrence(&record.subs, tag, occurrence) else { continue };
+
+            match kind {
+                "strip_nul" => {
+                    let payload = &mut record.subs[index].payload;
+                    let same_length = operation.get("from_len").and_then(Value::as_u64)
+                        == Some(payload.len() as u64);
+                    let same_content = operation.get("from_hash").and_then(Value::as_str)
+                        == Some(fnv1a64_bytes(payload).as_str());
+                    // Never strip a terminator from a string edited by the user.
+                    if same_length && same_content && payload.last() == Some(&0) {
+                        payload.pop();
+                        repairs += 1;
+                    }
+                }
+                "bytes" => {
+                    if let Some(changes) = operation.get("changes").and_then(Value::as_array) {
+                        for change in changes {
+                            let fields = change.as_array().ok_or_else(|| invalid_data("bad byte patch"))?;
+                            if fields.len() != 3 { continue; }
+                            let Some(position_u64) = fields[0].as_u64() else { continue };
+                            let Some(from_u64) = fields[1].as_u64() else { continue };
+                            let Some(to_u64) = fields[2].as_u64() else { continue };
+                            if from_u64 > u8::MAX as u64 || to_u64 > u8::MAX as u64 { continue; }
+                            let Ok(position) = usize::try_from(position_u64) else { continue };
+                            let from = from_u64 as u8;
+                            let to = to_u64 as u8;
+                            if position < record.subs[index].payload.len()
+                                && record.subs[index].payload[position] == from
+                            {
+                                record.subs[index].payload[position] = to;
+                                repairs += 1;
+                            }
+                        }
+                    }
+                }
+                "replace" => {
+                    let from = hex_decode(operation.get("from").and_then(Value::as_str).unwrap_or(""))?;
+                    if record.subs[index].payload == from {
+                        record.subs[index].payload = hex_decode(
+                            operation.get("to").and_then(Value::as_str).unwrap_or("")
+                        )?;
+                        repairs += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Remove from the largest occurrence number down so removing one repeated
+        // tag cannot shift the occurrence number of the next one.
+        let mut removals: Vec<&Value> = operations
+            .iter()
+            .filter(|op| op.get("op").and_then(Value::as_str) == Some("remove"))
+            .collect();
+        removals.sort_by_key(|op| std::cmp::Reverse(op.get("occ").and_then(Value::as_u64).unwrap_or(0)));
+        for operation in removals {
+            let tag = parse_tag(operation.get("tag").and_then(Value::as_str).unwrap_or("????"))?;
+            let occurrence = operation.get("occ").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let Some(index) = find_occurrence(&record.subs, tag, occurrence) else { continue };
+            let expected = hex_decode(operation.get("payload").and_then(Value::as_str).unwrap_or(""))?;
+            if record.subs[index].payload == expected {
+                record.subs.remove(index);
+                repairs += 1;
+            }
+        }
+
+        let mut inserts: Vec<&Value> = operations
+            .iter()
+            .filter(|op| op.get("op").and_then(Value::as_str) == Some("insert"))
+            .collect();
+        inserts.sort_by_key(|op| op.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX));
+        for operation in inserts {
+            let tag = parse_tag(operation.get("tag").and_then(Value::as_str).unwrap_or("????"))?;
+            let occurrence = operation.get("occ").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if find_occurrence(&record.subs, tag, occurrence).is_some() {
+                continue;
+            }
+            let index = (operation
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or(record.subs.len() as u64) as usize)
+                .min(record.subs.len());
+            let payload = hex_decode(operation.get("payload").and_then(Value::as_str).unwrap_or(""))?;
+            record.subs.insert(index, RawSub { tag, payload });
+            repairs += 1;
+        }
+
+        if let Some(order) = meta.get("order").and_then(Value::as_array) {
+            let before: Vec<[u8; 4]> = record.subs.iter().map(|s| s.tag).collect();
+            if reorder_subrecords(&mut record.subs, order)? {
+                let after: Vec<[u8; 4]> = record.subs.iter().map(|s| s.tag).collect();
+                if before != after {
+                    repairs += 1;
+                }
+            }
+        }
+    }
+
+    if repairs > 0 {
+        atomic_write(path, &write_records(&records)?)?;
+    }
+    Ok(repairs)
+}
+
+fn temporary_plugin_path(input:&Path)->PathBuf{
+    let mut p=env::temp_dir(); let ext=input.extension().and_then(OsStr::to_str).unwrap_or("esp"); p.push(format!("ArenaTES3JSON-{}-roundtrip.{}",std::process::id(),ext)); p
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
@@ -678,37 +1359,21 @@ mod tests {
     #[test]
     fn cp1251_russian_round_trip() {
         let pseudo = "Ïðèâåò, ¨æèê!";
-        let unicode = transform_export_text(pseudo, EncodingMode::Cp1251);
+        let unicode = transform_export_text(pseudo, WINDOWS_1251).unwrap();
         assert_eq!(unicode, "Привет, Ёжик!");
-        assert_eq!(transform_import_text(&unicode, EncodingMode::Cp1251), pseudo);
-    }
-
-    #[test]
-    fn cp1251_extended_symbols() {
-        assert_eq!(cp1251_from_transport_char('\u{00B9}'), '\u{2116}');
-        assert_eq!(transport_char_from_cp1251('\u{2116}'), Some('\u{00B9}'));
+        assert_eq!(transform_import_text(&unicode, WINDOWS_1251).unwrap(), pseudo);
     }
 
     #[test]
     fn cp1251_punctuation_stays_encodable() {
-        // Regression for Arena_Dealer_script: CP1251 and CP1252 both encode
-        // U+2026 as byte 0x85, so the transport character must stay U+2026.
-        assert_eq!(transport_char_from_cp1251('…'), Some('…'));
-        assert_eq!(cp1251_from_transport_char('…'), '…');
-        assert_eq!(transform_import_text("Это честь…", EncodingMode::Cp1251), "Ýòî ÷åñòü…");
+        assert_eq!(transform_import_text("Это честь…", WINDOWS_1251).unwrap(), "Ýòî ÷åñòü…");
     }
 
     #[test]
-    fn cp1251_high_table_round_trip() {
-        for byte in 0x80u32..=0xFF {
-            if byte == 0x98 {
-                continue;
-            }
-            let idx = (byte - 0x80) as usize;
-            let transport = CP1252_HIGH[idx];
-            let unicode = cp1251_from_transport_char(transport);
-            assert_eq!(transport_char_from_cp1251(unicode), Some(transport));
-        }
+    fn supports_multiple_encodings() {
+        let enc = Encoding::for_label(b"windows-1250").unwrap();
+        let pseudo = transform_import_text("Příliš žluťoučký kůň", enc).unwrap();
+        assert_eq!(transform_export_text(&pseudo, enc).unwrap(), "Příliš žluťoučký kůň");
     }
 
 
@@ -825,4 +1490,128 @@ mod tests {
         assert_eq!(restored, 0);
         assert_eq!(patched, plugin);
     }
+    fn raw_record(tag: &[u8; 4], subs: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (sub_tag, payload) in subs {
+            body.extend(subrecord(sub_tag, payload));
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(tag);
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend(body);
+        out
+    }
+
+    #[test]
+    fn binary_delta_restores_empty_subrecords_padding_and_string_termination() {
+        let aidt_original = [0u8, 0, 10, 30, 90, 6, 50, 118, 0, 0, 0, 0];
+        let aidt_normalized = [0u8, 0, 10, 30, 90, 0, 0, 0, 0, 0, 0, 0];
+        let original = raw_record(
+            b"NPC_",
+            &[(b"NAME", b"npc\0"), (b"ANAM", b"\0"), (b"AIDT", &aidt_original), (b"SCTX", b"begin x")],
+        );
+        let normalized = raw_record(
+            b"NPC_",
+            &[(b"NAME", b"npc\0"), (b"AIDT", &aidt_normalized), (b"SCTX", b"begin x\0")],
+        );
+        let metadata = build_binary_metadata(&original, &normalized).unwrap();
+        assert!(metadata[0].is_some());
+
+        let path = env::temp_dir().join(format!("ArenaTES3JSON-test-{}.esp", std::process::id()));
+        fs::write(&path, &normalized).unwrap();
+        let repaired = apply_binary_metadata_to_file(&path, &metadata, &HashSet::new()).unwrap();
+        assert!(repaired > 0);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let _ = fs::remove_file(path);
+    }
+
+
+    #[test]
+    fn binary_delta_does_not_strip_nul_from_edited_text() {
+        let original = raw_record(b"INFO", &[(b"BNAM", b"first")]);
+        let normalized = raw_record(b"INFO", &[(b"BNAM", b"first\0")]);
+        let edited = raw_record(b"INFO", &[(b"BNAM", b"second\0")]);
+        let metadata = build_binary_metadata(&original, &normalized).unwrap();
+        let path = env::temp_dir().join(format!(
+            "ArenaTES3JSON-text-edit-test-{}.esp", std::process::id()));
+        fs::write(&path, &edited).unwrap();
+        apply_binary_metadata_to_file(&path, &metadata, &HashSet::new()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), edited);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn changed_script_repair_is_hash_guarded() {
+        let original_text = "begin Test\nshort counter\nend";
+        let mut value = json!([{
+            "type": "Script",
+            "id": "Test",
+            "header": {
+                "num_shorts": 0, "num_longs": 0, "num_floats": 0,
+                "bytecode_length": 2, "variables_length": 0
+            },
+            "variables": serde_byte_vec_base64(&[]),
+            "bytecode": serde_byte_vec_base64(&[1, 1]),
+            "text": original_text,
+            "_arena_source_hash": fnv1a64(original_text)
+        }]);
+
+        let mut unchanged_value = value.clone();
+        let unchanged = repair_scripts_if_requested(&mut unchanged_value, RepairScriptsMode::Changed).unwrap();
+        assert!(unchanged.is_empty());
+
+        value[0]["text"] = Value::String("begin Test\nshort counter\nlong other\nend".into());
+        let repaired = repair_scripts_if_requested(&mut value, RepairScriptsMode::Changed).unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert!(repaired.contains(&0));
+        assert_eq!(value[0]["header"]["num_shorts"].as_u64(), Some(1));
+        assert_eq!(value[0]["header"]["num_longs"].as_u64(), Some(1));
+        assert_eq!(value[0]["header"]["bytecode_length"].as_u64(), Some(0));
+        assert_eq!(value[0]["bytecode"].as_str(), Some("AAAAAA=="));
+    }
+
+    #[test]
+    fn cell_nam9_is_not_duplicated_in_generic_binary_metadata() {
+        let mut original_body = Vec::new();
+        original_body.extend(subrecord(b"NAME", b"\0"));
+        original_body.extend(subrecord(b"FRMR", &1u32.to_le_bytes()));
+        original_body.extend(subrecord(b"NAME", b"crate\0"));
+        original_body.extend(subrecord(b"NAM9", &1u32.to_le_bytes()));
+        original_body.extend(subrecord(b"DATA", &[0u8; 24]));
+        let original = one_cell_plugin(&original_body);
+
+        let mut normalized_body = Vec::new();
+        normalized_body.extend(subrecord(b"NAME", b"\0"));
+        normalized_body.extend(subrecord(b"FRMR", &1u32.to_le_bytes()));
+        normalized_body.extend(subrecord(b"NAME", b"crate\0"));
+        normalized_body.extend(subrecord(b"DATA", &[0u8; 24]));
+        let normalized = one_cell_plugin(&normalized_body);
+
+        let metadata = build_binary_metadata(&original, &normalized).unwrap();
+        let subs = metadata[0].as_ref().unwrap().get("subs").and_then(Value::as_array).unwrap();
+        assert!(!subs.iter().any(|op| op.get("tag").and_then(Value::as_str) == Some("NAM9")));
+    }
+
+    #[test]
+    fn binary_delta_preserves_semantic_edits_while_restoring_unknown_bytes() {
+        let original_payload = [1u8, 2, 3, 4, 5, 77, 88, 99, 0, 0, 0, 0];
+        let normalized_payload = [1u8, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0];
+        let edited_payload = [9u8, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0];
+        let original = raw_record(b"NPC_", &[(b"AIDT", &original_payload)]);
+        let normalized = raw_record(b"NPC_", &[(b"AIDT", &normalized_payload)]);
+        let edited = raw_record(b"NPC_", &[(b"AIDT", &edited_payload)]);
+        let metadata = build_binary_metadata(&original, &normalized).unwrap();
+
+        let path = env::temp_dir().join(format!("ArenaTES3JSON-edit-test-{}.esp", std::process::id()));
+        fs::write(&path, &edited).unwrap();
+        apply_binary_metadata_to_file(&path, &metadata, &HashSet::new()).unwrap();
+        let result = parse_records(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(result[0].subs[0].payload[0], 9); // semantic edit survives
+        assert_eq!(&result[0].subs[0].payload[5..8], &[77, 88, 99]); // raw padding restored
+        let _ = fs::remove_file(path);
+    }
+
+
 }

@@ -1,126 +1,98 @@
-# ArenaTES3JSON
+# ArenaTES3JSON 0.4.0
 
-**ArenaTES3JSON** — конвертер плагинов Morrowind/TES3:
+**ArenaTES3JSON** — Qt-конвертер плагинов Morrowind/TES3:
 
-**ESM / ESP ↔ JSON**
+**ESM / ESP ↔ semantic JSON**
 
-GUI написан на **Qt 6**, семантический backend — на Rust и использует TES3 object model. Формат JSON совпадает по структуре с `tes3conv` и присланным примером `MFR.json`.
+Формат основных объектов совместим со схемой `tes3conv` (`Header`, `GameSetting`, `Class`, `Npc`, `Cell`, `Script`, `DialogueInfo` и т. д.), но версия 0.4.0 дополнительно сохраняет только те бинарные детали, которые semantic writer сам теряет.
 
-## Формат JSON
+## Что исправлено в 0.4.0
 
-ArenaTES3JSON создаёт чистый semantic JSON без дополнительных sidecar-файлов и без служебных полей ArenaTES3JSON:
+На тестовом `MFR.esm` была найдена точная причина уменьшения файла после `ESM → JSON → ESM`: writer выбрасывал пустые subrecord'ы, обнулял unknown/padding-байты, добавлял NUL к некоторым строкам и иногда создавал отсутствовавшие default-subrecord'ы. ArenaTES3JSON теперь сравнивает исходный plugin с нормализованным выводом TES3 writer и сохраняет компактную дельту только для реально отличающихся record'ов.
 
-```json
-[
-  {
-    "type": "Header",
-    "flags": "",
-    "version": 1.3,
-    "file_type": "Esm",
-    "author": "aL & TES Community",
-    "description": "...",
-    "num_objects": 51239,
-    "masters": [
-      ["Morrowind.esm", 79764287]
-    ]
-  },
-  {
-    "type": "GameSetting",
-    "flags": "",
-    "id": "sExpelled",
-    "value": {
-      "type": "String",
-      "data": "ИЗГНАНЫ"
-    }
-  }
-]
-```
+Исправляется в том числе:
 
-Поддерживаются типы, которые поддерживает закреплённая TES3-библиотека: `Header`, `GameSetting`, `GlobalVariable`, `Class`, `Faction`, `Race`, `Script`, `Npc`, `Cell`, `Landscape`, `Dialogue`, `DialogueInfo` и другие записи TES3.
+- пустой, но присутствующий `NPC_:ANAM`;
+- пустые `ACTI:FNAM`, `LIGH:MODL`, `RACE:FNAM`, `SOUN:FNAM` и аналогичные случаи;
+- unknown/padding bytes в `NPC_/CREA:AIDT`, коротком `NPC_:NPDT`, `AI_T`, `AI_F`, `AI_E` и других фиксированных структурах;
+- хвостовые байты `FACT:RNAM`, `REGN:SNAM`, `PGRD:PGRP` и других структур;
+- лишние завершающие NUL, добавленные semantic writer к строковым subrecord'ам;
+- writer-created default blocks, которых не было в исходном plugin;
+- исходный порядок subrecord'ов, если writer его нормализует;
+- явный `Cell.references[].object_count = 1` / `NAM9`.
 
-При `JSON → ESM/ESP` плагин всегда пересобирается из semantic JSON. Бинарное представление может отличаться от исходного файла из-за нормализации writer'а, но поля JSON должны сохраняться.
+Никакого `.arena-lossless` sidecar рядом с JSON нет. Для точного восстановления небольшой `_arena_binary` добавляется **только к тем semantic-объектам, где writer реально меняет бинарное представление**. Патчи защищены ожидаемыми writer-байтами: если пользователь меняет соответствующее semantic-поле, его правка имеет приоритет и старые байты поверх неё не возвращаются.
 
-### Сохранение `Cell.references[].object_count`
+## Скрипты / SCPT
 
+В GUI есть галочка **«Ремонтировать байткод изменённых скриптов»**.
 
-В `0.3.6` иконка ArenaTES3JSON встроена непосредственно в Windows EXE и в Qt-приложение. Она отображается у файла в Проводнике, в ярлыках, заголовке окна, Alt+Tab и на панели задач; внешний `.ico` рядом с программой не нужен.
+При экспорте ArenaTES3JSON сохраняет хэш исходного `SCTX`. При обратной конвертации с включённой галочкой программа определяет, у каких `Script` реально изменился текст, пересобирает список локальных переменных `SCVR` и счётчики `SCHD`, а устаревший `SCDT` очищает по схеме, используемой TES3ZER0EDIT. Для таких SCPT старые raw-патчи не применяются поверх нового состояния.
 
-В `0.3.5` исправлена конкретная потеря данных, найденная на `MFR`: TES3 writer удалял явный `NAM9/object_count = 1` у локальных ссылок (`mast_index = 0`). ArenaTES3JSON теперь после semantic writer восстанавливает `NAM9` из JSON и проверяет соответствие `FRMR`, поэтому поле не исчезает при повторном `ESM → JSON`. На присланном MFR это **18 025** ссылок и ровно **216 300 байт** бинарных subrecord'ов. Никаких sidecar-файлов или скрытых полей для этого не используется.
+Это **ремонт структуры SCPT, а не полный компилятор опкодов Bethesda TESCS**. Поэтому опция не притворяется полноценной компиляцией произвольного MWScript в новый исполняемый vanilla-bytecode. Если нужен именно новый исполняемый SCDT для оригинального движка Morrowind, скрипт после изменения всё ещё следует скомпилировать TES Construction Set/MWEdit. Старый несовместимый байткод при этом ArenaTES3JSON не оставит случайно привязанным к новому тексту.
 
-## Windows-1251 / 1C
+## Кодировки
 
-Режим **Windows-1251 / 1C** включён по умолчанию. Русские однобайтовые строки преобразуются в нормальный Unicode UTF-8 в JSON и обратно в представление, ожидаемое TES3 writer.
+Вместо жёстко заданной CP1251 появился режим **Auto** и ручной выбор кодировки. После выбора `.esm/.esp/.json` программа сразу показывает:
 
-Таблица включает полную верхнюю половину Windows-1251: А-Я/а-я, Ё/ё, `№`, типографские кавычки, тире и другие символы. Преобразование теперь выполняется по исходному байту через внутреннее Windows-1252-представление TES3 backend, поэтому символы вроде `…`, кавычек и тире корректно собираются обратно в ESM/ESP.
+- тип файла;
+- размер;
+- число semantic-объектов;
+- определённую/выбранную кодировку.
 
-## Упрощённый GUI
+Поддерживаются кодировки `encoding_rs`/WHATWG, применимые к TES3, включая Windows-1250…1258, Windows-874, IBM866, KOI8-R/U, ISO-8859 family, Mac Cyrillic/Macintosh, Shift-JIS, EUC-JP, ISO-2022-JP, GBK/GB18030, Big5, EUC-KR, UTF-8 и их поддерживаемые aliases. Поле выбора редактируемое: можно ввести любое имя, принимаемое backend. Для русских Morrowind/1C plugin'ов Auto предпочитает Windows-1251 при уверенном обнаружении кириллицы.
 
-В окне оставлены только нужные элементы:
+JSON всегда записывается как нормальный UTF-8 Unicode.
 
-- входной `.esm`, `.esp` или `.json`;
+## GUI
+
+Окно остаётся компактным:
+
+- входной файл;
 - выходной файл;
-- автоматически определяемое направление конвертации;
-- кнопка **Конвертировать**;
+- `Auto` / ручная кодировка;
+- галочка ремонта изменённых SCPT;
+- направление конвертации;
+- информация о выбранном файле;
 - прогресс 0–100%;
 - короткий итоговый статус;
 - Drag & Drop.
 
-Windows-1251/1C применяется автоматически. Никаких `.arena-lossless`, скрытых блоков или дополнительных файлов программа не создаёт.
+Язык интерфейса выбирается автоматически: русская системная locale → **RU**, остальные → **EN**.
 
-### Автоматический язык RU / EN
+## Один EXE
 
-Интерфейс выбирает язык автоматически по системному языку Windows/Qt:
-
-- `ru`, `ru-RU` и другие русские локали → **русский**;
-- все остальные локали → **English**.
-
-Отдельные файлы перевода рядом с EXE не нужны. Локализованы основное окно, диалоги, статусы и ошибки однофайлового launcher.
-
-## Один EXE в Windows-сборке
-
-Release/GitHub Actions теперь выдаёт один файл:
+GitHub Actions/Windows packaging выдаёт только:
 
 ```text
 ArenaTES3JSON.exe
 ```
 
-Qt DLL и `ArenaTES3JSON-core.exe` упакованы внутрь этого файла. При первом запуске встроенный runtime извлекается нативно средствами Windows в `%LOCALAPPDATA%\ArenaTES3JSON\Runtime\<payload-id>`; рядом с загруженным EXE никаких дополнительных файлов не требуется. PowerShell/7-Zip для распаковки не используются. Каждый новый payload получает собственный кэш, поэтому старая или занятая предыдущим запуском папка не мешает обновлению.
-
-Исходная сборка проекта по-прежнему создаёт отдельные GUI/CLI/core для разработки и тестов, но пользовательский Windows-артефакт содержит только один EXE.
+Иконка встроена в EXE и отображается в Проводнике, ярлыке, заголовке окна, Alt+Tab и панели задач. Qt runtime и Rust backend упакованы внутрь CAB payload. Launcher извлекает его нативно через Windows SetupAPI в `%LOCALAPPDATA%\ArenaTES3JSON\Runtime\<payload-id>`, без PowerShell/7-Zip.
 
 ## CLI
 
 ```bat
 ArenaTES3JSON-cli MFR.esm
-ArenaTES3JSON-cli MFR.json MFR.esm
+ArenaTES3JSON-cli MFR.esm MFR.json --encoding auto
+ArenaTES3JSON-cli MFR.json MFR.esm --encoding windows-1251
+ArenaTES3JSON-cli MFR.json MFR.esm --repair-scripts
 ArenaTES3JSON-cli --compact MFR.esm MFR.json
-ArenaTES3JSON-cli --raw-encoding plugin.esp plugin.json
+```
+
+Низкоуровневый backend также умеет:
+
+```bat
+ArenaTES3JSON-core inspect MFR.esm --encoding auto
 ```
 
 ## Сборка Windows
 
-Нужны:
-
-- Visual Studio 2022 / MSVC x64;
-- CMake 3.24+;
-- Qt 6.5+ MSVC kit;
-- Rust **stable** + Cargo.
-
-Пример:
+Требуется Visual Studio 2022, Qt 6.8.x MSVC x64, CMake и Rust stable.
 
 ```bat
-rustup toolchain install stable
-rustup default stable
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```
 
-Готовая пользовательская сборка появится в:
-
-```text
-dist\ArenaTES3JSON.exe
-```
-
-GitHub Actions выполняет ту же сборку автоматически и публикует `ArenaTES3JSON.exe` как единственный файл артефакта.
-
-Подробности JSON: `docs/JSON_FORMAT_RU.md`.
+Итоговый пользовательский файл появится в `dist\ArenaTES3JSON.exe`.

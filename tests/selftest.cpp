@@ -40,6 +40,16 @@ int main(int argc, char **argv)
         return 31;
     }
 
+    const auto inspection = Converter::parseInspectionStatus(
+        QByteArrayLiteral("{\"ok\":true,\"kind\":\"ESM\",\"size\":52374720,\"encoding\":\"windows-1251\",\"objects\":51240}"));
+    if (inspection.kind != QStringLiteral("ESM")
+        || inspection.encoding != QStringLiteral("windows-1251")
+        || inspection.size != 52374720
+        || inspection.objects != 51240) {
+        out << "Inspection status parsing failed" << Qt::endl;
+        return 32;
+    }
+
     out << "ArenaTES3JSON frontend self-test OK" << Qt::endl;
     return 0;
 }
