@@ -1,137 +1,157 @@
 #include "converter.h"
-#include "tes3plugin.h"
 
-#include <QCryptographicHash>
-#include <QFile>
+#include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
-#include <QSaveFile>
+#include <QJsonObject>
+#include <QProcess>
 
 #include <stdexcept>
+
+#ifndef ARENATES3JSON_RUST_CORE_NAME
+#  ifdef Q_OS_WIN
+#    define ARENATES3JSON_RUST_CORE_NAME "ArenaTES3JSON-core.exe"
+#  else
+#    define ARENATES3JSON_RUST_CORE_NAME "ArenaTES3JSON-core"
+#  endif
+#endif
 
 namespace arena::tes3json {
 namespace {
 
-[[noreturn]] void fail(const QString &message) { throw std::runtime_error(message.toStdString()); }
-
-QByteArray readAll(const QString &path)
+[[noreturn]] void fail(const QString &message)
 {
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) fail(QStringLiteral("Cannot open %1: %2").arg(path, f.errorString()));
-    return f.readAll();
+    throw std::runtime_error(message.toUtf8().constData());
 }
 
-void writeAll(const QString &path, QByteArrayView bytes)
+QString encodingArgument(TextEncodingMode mode)
 {
-    QSaveFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) fail(QStringLiteral("Cannot write %1: %2").arg(path, f.errorString()));
-    if (f.write(bytes.data(), bytes.size()) != bytes.size()) fail(QStringLiteral("Short write: %1").arg(path));
-    if (!f.commit()) fail(QStringLiteral("Cannot commit %1: %2").arg(path, f.errorString()));
+    return mode == TextEncodingMode::Windows1251 ? QStringLiteral("cp1251") : QStringLiteral("raw");
 }
 
-QString sha(QByteArrayView bytes)
+QString detectJsonFileType(const QString &path)
 {
-    return QString::fromLatin1(QCryptographicHash::hash(bytes.toByteArray(), QCryptographicHash::Sha256).toHex());
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return QStringLiteral("esp");
+    const QByteArray prefix = file.read(128 * 1024);
+    const qsizetype marker = prefix.indexOf("\"file_type\"");
+    if (marker < 0) return QStringLiteral("esp");
+    const QByteArray nearby = prefix.mid(marker, 256).toLower();
+    return nearby.contains("\"esm\"") ? QStringLiteral("esm") : QStringLiteral("esp");
 }
 
 } // namespace
 
+QString Converter::backendPath()
+{
+    const QString besideApp = QDir(QCoreApplication::applicationDirPath())
+                                  .filePath(QStringLiteral(ARENATES3JSON_RUST_CORE_NAME));
+    if (QFileInfo::exists(besideApp)) return besideApp;
+
+    const QString cwd = QDir::current().filePath(QStringLiteral(ARENATES3JSON_RUST_CORE_NAME));
+    if (QFileInfo::exists(cwd)) return cwd;
+
+    return besideApp;
+}
+
 QString Converter::defaultOutputFor(const QString &inputPath)
 {
-    const QFileInfo fi(inputPath);
-    const QString ext = fi.suffix().toLower();
-    if (ext == QStringLiteral("esp") || ext == QStringLiteral("esm")) {
-        return fi.dir().filePath(fi.completeBaseName() + QStringLiteral(".json"));
+    const QFileInfo info(inputPath);
+    const QString ext = info.suffix().toLower();
+    if (ext == QStringLiteral("esm") || ext == QStringLiteral("esp")) {
+        return info.dir().filePath(info.completeBaseName() + QStringLiteral(".json"));
     }
-    if (ext == QStringLiteral("json") && fi.exists()) {
-        QFile f(inputPath);
-        if (f.open(QIODevice::ReadOnly)) {
-            QJsonParseError error;
-            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &error);
-            if (error.error == QJsonParseError::NoError && doc.isObject()) {
-                const QString sourceExt = doc.object().value(QStringLiteral("source")).toObject()
-                                              .value(QStringLiteral("extension")).toString().toLower();
-                if (sourceExt == QStringLiteral("esm") || sourceExt == QStringLiteral("esp")) {
-                    return fi.dir().filePath(fi.completeBaseName() + QLatin1Char('.') + sourceExt);
-                }
-            }
-        }
+    if (ext == QStringLiteral("json")) {
+        return info.dir().filePath(info.completeBaseName() + QLatin1Char('.') + detectJsonFileType(inputPath));
     }
-    return fi.dir().filePath(fi.completeBaseName() + QStringLiteral(".esp"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral(".json"));
 }
 
-ConversionResult Converter::pluginToJson(const QString &inputPath, const QString &outputPath, bool compact)
+ConversionResult Converter::runBackend(const QStringList &arguments)
 {
-    const QByteArray input = readAll(inputPath);
-    const QFileInfo fi(inputPath);
-    Tes3Plugin plugin = Tes3Plugin::parse(input, fi.fileName(), fi.suffix());
-    const QJsonDocument doc(plugin.toJson());
-    const QByteArray json = doc.toJson(compact ? QJsonDocument::Compact : QJsonDocument::Indented);
-    writeAll(outputPath, json);
+    QProcess process;
+    process.setProgram(backendPath());
+    process.setArguments(arguments);
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    process.start();
+    if (!process.waitForStarted()) {
+        fail(QStringLiteral("Не удалось запустить backend: %1\n%2")
+             .arg(backendPath(), process.errorString()));
+    }
+    if (!process.waitForFinished(-1)) {
+        process.kill();
+        fail(QStringLiteral("Backend не завершил операцию: %1").arg(process.errorString()));
+    }
 
-    ConversionResult result;
-    result.outputPath = outputPath;
-    result.inputSha256 = sha(input);
-    result.outputSha256 = sha(json);
-    result.inputSize = input.size();
-    result.outputSize = json.size();
-    return result;
-}
+    const QByteArray stdoutData = process.readAllStandardOutput().trimmed();
+    const QByteArray stderrData = process.readAllStandardError().trimmed();
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        QString error = QString::fromUtf8(stderrData);
+        if (error.isEmpty()) error = QString::fromUtf8(stdoutData);
+        fail(error.isEmpty() ? QStringLiteral("Ошибка backend ArenaTES3JSON-core") : error);
+    }
 
-ConversionResult Converter::jsonToPlugin(const QString &inputPath, const QString &outputPathArg)
-{
-    const QByteArray json = readAll(inputPath);
     QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
-    if (doc.isNull() || !doc.isObject()) {
-        fail(QStringLiteral("JSON parse error at %1: %2").arg(parseError.offset).arg(parseError.errorString()));
+    const QJsonDocument doc = QJsonDocument::fromJson(stdoutData, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        fail(QStringLiteral("Backend вернул некорректный статус JSON: %1\n%2")
+             .arg(parseError.errorString(), QString::fromUtf8(stdoutData)));
     }
 
-    Tes3Plugin plugin = Tes3Plugin::fromJson(doc.object());
-    QString outputPath = outputPathArg;
-    if (outputPath.isEmpty()) {
-        const QFileInfo fi(inputPath);
-        QString ext = plugin.sourceExtension;
-        if (ext != QStringLiteral("esm") && ext != QStringLiteral("esp")) ext = QStringLiteral("esp");
-        outputPath = fi.dir().filePath(fi.completeBaseName() + QLatin1Char('.') + ext);
-    }
-
-    const QByteArray output = plugin.build();
-    writeAll(outputPath, output);
-
+    const QJsonObject obj = doc.object();
     ConversionResult result;
-    result.outputPath = outputPath;
-    result.inputSha256 = sha(json);
-    result.outputSha256 = sha(output);
-    result.inputSize = json.size();
-    result.outputSize = output.size();
-    if (!plugin.sourceSha256.isEmpty()) {
-        result.byteIdenticalToSource = (plugin.sourceSha256 == QCryptographicHash::hash(output, QCryptographicHash::Sha256));
-    }
+    result.outputPath = obj.value(QStringLiteral("output")).toString();
+    result.sidecarPath = obj.value(QStringLiteral("sidecar")).toString();
+    result.mode = obj.value(QStringLiteral("mode")).toString();
+    result.message = obj.value(QStringLiteral("message")).toString();
+    result.inputSha256 = obj.value(QStringLiteral("source_sha256")).toString();
+    result.outputSha256 = obj.value(QStringLiteral("output_sha256")).toString();
+    result.inputSize = static_cast<qint64>(obj.value(QStringLiteral("input_size")).toDouble());
+    result.outputSize = static_cast<qint64>(obj.value(QStringLiteral("output_size")).toDouble());
+    result.byteIdenticalToSource = obj.value(QStringLiteral("byte_identical")).toBool(false);
     return result;
 }
 
-bool Converter::verifyRoundTrip(const QString &pluginPath, QString *details)
+ConversionResult Converter::pluginToJson(const QString &inputPath,
+                                         const QString &outputPath,
+                                         bool compact,
+                                         TextEncodingMode encoding,
+                                         bool lossless)
+{
+    QStringList args{QStringLiteral("to-json"), inputPath, outputPath,
+                     QStringLiteral("--encoding"), encodingArgument(encoding)};
+    if (compact) args << QStringLiteral("--compact");
+    if (!lossless) args << QStringLiteral("--no-lossless");
+    return runBackend(args);
+}
+
+ConversionResult Converter::jsonToPlugin(const QString &inputPath,
+                                         const QString &outputPath,
+                                         TextEncodingMode encoding,
+                                         bool lossless)
+{
+    QStringList args{QStringLiteral("to-plugin"), inputPath, outputPath,
+                     QStringLiteral("--encoding"), encodingArgument(encoding)};
+    if (!lossless) args << QStringLiteral("--no-lossless");
+    return runBackend(args);
+}
+
+bool Converter::verifyRoundTrip(const QString &pluginPath, QString *details, TextEncodingMode encoding)
 {
     try {
-        const QByteArray input = readAll(pluginPath);
-        const QFileInfo fi(pluginPath);
-        const Tes3Plugin first = Tes3Plugin::parse(input, fi.fileName(), fi.suffix());
-        const QJsonDocument json(first.toJson());
-        const Tes3Plugin second = Tes3Plugin::fromJson(json.object());
-        const QByteArray output = second.build();
-        const bool same = (input == output);
+        const ConversionResult result = runBackend({QStringLiteral("verify"), pluginPath,
+                                                    QStringLiteral("--encoding"), encodingArgument(encoding)});
         if (details) {
-            *details = same
-                ? QStringLiteral("OK: byte-for-byte identical, %1 bytes, SHA-256 %2")
-                      .arg(input.size()).arg(sha(input))
-                : QStringLiteral("FAILED: source %1 bytes / rebuilt %2 bytes, SHA-256 %3 / %4")
-                      .arg(input.size()).arg(output.size()).arg(sha(input), sha(output));
+            *details = QStringLiteral("%1\nРазмер: %2 байт\nSHA-256: %3")
+                           .arg(result.message)
+                           .arg(result.outputSize)
+                           .arg(result.outputSha256);
         }
-        return same;
-    } catch (const std::exception &e) {
-        if (details) *details = QString::fromUtf8(e.what());
+        return result.byteIdenticalToSource;
+    } catch (const std::exception &error) {
+        if (details) *details = QString::fromUtf8(error.what());
         return false;
     }
 }

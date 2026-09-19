@@ -2,14 +2,15 @@
 #include "core/converter.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QIcon>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMimeData>
@@ -26,16 +27,19 @@ namespace arena::tes3json {
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.1.1 — ESM/ESP ↔ JSON"));
+    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.2.0 — ESM/ESP ↔ tes3conv JSON"));
     setWindowIcon(QIcon(QStringLiteral(":/ArenaTES3JSON.svg")));
-    resize(760, 480);
+    resize(790, 540);
     setAcceptDrops(true);
 
     auto *central = new QWidget(this);
     auto *layout = new QVBoxLayout(central);
 
-    auto *title = new QLabel(QStringLiteral("<b>ArenaTES3JSON</b> — lossless TES3 plugin converter"), central);
-    auto *hint = new QLabel(QStringLiteral("ESM/ESP ↔ JSON • Windows-1251/1C • unknown records are preserved • no tes3conv dependency"), central);
+    auto *title = new QLabel(QStringLiteral("<b>ArenaTES3JSON</b> — ESM/ESP ↔ semantic JSON"), central);
+    auto *hint = new QLabel(
+        QStringLiteral("JSON совместим со схемой tes3conv: Header, GameSetting, Class, Npc, Cell, DialogueInfo и т. д. "
+                       "Windows-1251/1C преобразуется в нормальный Unicode. Lossless-sidecar не добавляет служебные поля в JSON."),
+        central);
     hint->setWordWrap(true);
     layout->addWidget(title);
     layout->addWidget(hint);
@@ -52,17 +56,26 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     outputRow->addWidget(m_output, 1);
     outputRow->addWidget(outputBrowse);
 
+    m_encoding = new QComboBox(central);
+    m_encoding->addItem(QStringLiteral("Windows-1251 / 1C (русский)"));
+    m_encoding->addItem(QStringLiteral("Без перекодировки (raw)"));
+
     auto *form = new QFormLayout();
     form->addRow(QStringLiteral("Входной ESM/ESP/JSON:"), inputRow);
     form->addRow(QStringLiteral("Выходной файл:"), outputRow);
+    form->addRow(QStringLiteral("Кодировка текста:"), m_encoding);
     layout->addLayout(form);
 
     m_compact = new QCheckBox(QStringLiteral("Компактный JSON (без отступов)"), central);
+    m_lossless = new QCheckBox(QStringLiteral("Lossless round-trip: создавать/использовать .arena-lossless"), central);
+    m_lossless->setChecked(true);
+    m_lossless->setToolTip(QStringLiteral("Если JSON семантически не менялся, исходный ESP/ESM будет восстановлен byte-for-byte."));
     layout->addWidget(m_compact);
+    layout->addWidget(m_lossless);
 
     auto *buttons = new QHBoxLayout();
     m_convert = new QPushButton(QStringLiteral("Конвертировать"), central);
-    auto *verifyButton = new QPushButton(QStringLiteral("Проверить lossless round-trip"), central);
+    auto *verifyButton = new QPushButton(QStringLiteral("Проверить lossless"), central);
     buttons->addWidget(m_convert);
     buttons->addWidget(verifyButton);
     buttons->addStretch(1);
@@ -83,8 +96,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
 void MainWindow::browseInput()
 {
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Открыть TES3 plugin или JSON"), {},
-                                                       QStringLiteral("TES3/JSON (*.esm *.esp *.json);;Все файлы (*.*)"));
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Открыть TES3 plugin или JSON"),
+        {},
+        QStringLiteral("TES3/JSON (*.esm *.esp *.json);;Все файлы (*.*)"));
     if (!path.isEmpty()) m_input->setText(path);
 }
 
@@ -102,32 +118,58 @@ void MainWindow::updateOutput()
 void MainWindow::convert()
 {
     if (m_input->text().isEmpty()) return;
+    const auto encoding = m_encoding->currentIndex() == 0
+        ? TextEncodingMode::Windows1251 : TextEncodingMode::Raw;
+
     try {
         const QString ext = QFileInfo(m_input->text()).suffix().toLower();
         if (ext == QStringLiteral("esm") || ext == QStringLiteral("esp")) {
-            const auto r = Converter::pluginToJson(m_input->text(), m_output->text(), m_compact->isChecked());
-            m_log->append(QStringLiteral("ESM/ESP → JSON: %1\n%2 → %3 bytes\nSHA-256: %4")
-                          .arg(r.outputPath).arg(r.inputSize).arg(r.outputSize).arg(r.inputSha256));
+            const auto result = Converter::pluginToJson(m_input->text(), m_output->text(),
+                                                        m_compact->isChecked(), encoding, m_lossless->isChecked());
+            QString log = QStringLiteral("ESM/ESP → JSON\n%1\n%2 → %3 байт")
+                              .arg(result.outputPath)
+                              .arg(result.inputSize)
+                              .arg(result.outputSize);
+            if (!result.sidecarPath.isEmpty()) {
+                log += QStringLiteral("\nLossless: %1").arg(result.sidecarPath);
+            }
+            m_log->append(log + QStringLiteral("\n"));
         } else if (ext == QStringLiteral("json")) {
-            const auto r = Converter::jsonToPlugin(m_input->text(), m_output->text());
-            m_log->append(QStringLiteral("JSON → ESM/ESP: %1\n%2 bytes\nSHA-256: %3%4")
-                          .arg(r.outputPath).arg(r.outputSize).arg(r.outputSha256,
-                          r.byteIdenticalToSource ? QStringLiteral("\nСовпадает с исходником byte-for-byte.") : QString()));
+            const auto result = Converter::jsonToPlugin(m_input->text(), m_output->text(),
+                                                        encoding, m_lossless->isChecked());
+            QString log = QStringLiteral("JSON → ESM/ESP\n%1\n%2 байт\n%3")
+                              .arg(result.outputPath)
+                              .arg(result.outputSize)
+                              .arg(result.message);
+            if (result.byteIdenticalToSource) {
+                log += QStringLiteral("\nBYTE-FOR-BYTE: OK");
+            }
+            m_log->append(log + QStringLiteral("\n"));
         } else {
             throw std::runtime_error("Unsupported extension");
         }
-    } catch (const std::exception &e) {
-        QMessageBox::critical(this, QStringLiteral("Ошибка"), QString::fromUtf8(e.what()));
+    } catch (const std::exception &error) {
+        QMessageBox::critical(this, QStringLiteral("Ошибка"), QString::fromUtf8(error.what()));
     }
 }
 
 void MainWindow::verify()
 {
     if (m_input->text().isEmpty()) return;
+    const QString ext = QFileInfo(m_input->text()).suffix().toLower();
+    if (ext != QStringLiteral("esm") && ext != QStringLiteral("esp")) {
+        QMessageBox::information(this, QStringLiteral("Проверка"), QStringLiteral("Для проверки выбери исходный .esm или .esp."));
+        return;
+    }
+
+    const auto encoding = m_encoding->currentIndex() == 0
+        ? TextEncodingMode::Windows1251 : TextEncodingMode::Raw;
     QString details;
-    const bool ok = Converter::verifyRoundTrip(m_input->text(), &details);
-    m_log->append(details);
-    QMessageBox::information(this, ok ? QStringLiteral("Lossless: OK") : QStringLiteral("Lossless: ошибка"), details);
+    const bool ok = Converter::verifyRoundTrip(m_input->text(), &details, encoding);
+    m_log->append(details + QStringLiteral("\n"));
+    QMessageBox::information(this,
+                             ok ? QStringLiteral("Lossless: OK") : QStringLiteral("Lossless: ошибка"),
+                             details);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)

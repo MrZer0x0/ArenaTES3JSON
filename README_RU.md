@@ -1,99 +1,120 @@
 # ArenaTES3JSON
 
-**ArenaTES3JSON** — новый Qt 6 конвертер плагинов TES3/Morrowind (`.esp`, `.esm`) в JSON и обратно, сделанный с упором на сохранение исходного бинарного файла.
+**ArenaTES3JSON** — конвертер плагинов Morrowind/TES3:
 
-## Зачем он нужен
+**ESM / ESP ↔ JSON**
 
-Обычный конвертер, который загружает плагин в объектную модель и затем полностью сохраняет его заново, может изменить бинарное представление даже без правок. ArenaTES3JSON работает иначе: он сохраняет исходные байты каждой подзаписи и не нормализует нетронутые данные.
+GUI написан на **Qt 6**, семантический backend — на Rust и использует TES3 object model. Формат JSON совместим с `tes3conv` и с присланным примером `MFR.json`.
 
-Главная проверка проекта:
+## Главное отличие 0.2
+
+JSON больше не выглядит как низкоуровневые `records/subrecords/data_b64`.
+
+Он выглядит так же, как tes3conv:
+
+```json
+[
+  {
+    "type": "Header",
+    "flags": "",
+    "version": 1.3,
+    "file_type": "Esm",
+    "author": "aL & TES Community",
+    "description": "...",
+    "num_objects": 51239,
+    "masters": [
+      ["Morrowind.esm", 79764287]
+    ]
+  },
+  {
+    "type": "GameSetting",
+    "flags": "",
+    "id": "sExpelled",
+    "value": {
+      "type": "String",
+      "data": "ИЗГНАНЫ"
+    }
+  }
+]
+```
+
+Поддерживаются все типы, которые поддерживает закреплённая TES3-библиотека: `Header`, `GameSetting`, `GlobalVariable`, `Class`, `Faction`, `Race`, `Script`, `Npc`, `Cell`, `Landscape`, `Dialogue`, `DialogueInfo` и остальные записи TES3.
+
+## Windows-1251 / 1C
+
+Режим **Windows-1251 / 1C** включён по умолчанию. Русские однобайтовые строки преобразуются в нормальный Unicode UTF-8 в JSON и обратно в представление, ожидаемое TES3 writer.
+
+В отличие от старого GUI, таблица включает не только А-Я/а-я и Ё/ё, но полную верхнюю половину Windows-1251, включая `№`, типографские кавычки и тире.
+
+## Почему исходный ESM/ESP больше не должен уменьшаться без правок
+
+Семантический JSON tes3conv не содержит всей информации о физическом бинарном представлении плагина. Поэтому полностью пересобранный файл может иметь другой размер даже при тех же объектах.
+
+ArenaTES3JSON решает это без изменения JSON-схемы. При экспорте:
 
 ```text
-plugin.esp -> plugin.json -> plugin.esp
-SHA-256 до == SHA-256 после
+MFR.esm
+  ↓
+MFR.json
+MFR.arena-lossless
 ```
 
-Если JSON не редактировался, конвертация должна быть **byte-for-byte** идентичной.
+`MFR.json` остаётся обычным tes3conv-совместимым JSON. В `.arena-lossless` хранится сжатый исходный бинарник и контрольные суммы.
 
-## Возможности
+При обратной конвертации:
 
-- ESP/ESM → JSON и JSON → ESP/ESM;
-- lossless round-trip без уменьшения/пересборки нетронутых данных;
-- встроенная Windows-1251 / 1C кодировка;
-- отображение строк в Unicode в поле `text`;
-- исходные байты всегда хранятся в `data_b64`;
-- изменение `text` перекодирует только изменённую подзапись;
-- изменение `data_b64` позволяет редактировать бинарные данные напрямую;
-- сохранение неизвестных/неразобранных payload как opaque base64;
-- SHA-256 проверка round-trip;
-- GUI на Qt 6 Widgets;
-- отдельный CLI для скриптов и CI;
-- drag & drop;
-- GitHub Actions для Windows x64.
+- если JSON **семантически не изменён**, исходный ESM/ESP восстанавливается **byte-for-byte**, с тем же размером и SHA-256;
+- изменение пробелов/отступов или порядка ключей JSON не считается изменением;
+- если данные JSON реально отредактированы, создаётся новый ESM/ESP через TES3 writer;
+- если sidecar отсутствует, JSON всё равно можно собрать в ESM/ESP обычным способом.
 
-## Важное отличие от tes3conv
+Lossless-sidecar можно отключить в GUI или ключом `--no-lossless`.
 
-ArenaTES3JSON v0.1 не пытается превратить все 40+ типов TES3 record в красивую семантическую объектную модель. JSON отражает реальную структуру `record/subrecord` и поэтому может гарантировать сохранение неизвестных данных. Читаемые строковые подзаписи дополнительно получают поле `text`.
+## GUI
 
-Это сознательная база для дальнейшего добавления типизированных представлений (`CELL`, `NPC_`, `DIAL`, `INFO`, `SCPT` и т.д.) без потери lossless-слоя.
-
-## Сборка Windows
-
-Нужно:
-
-- Visual Studio 2022 Build Tools / MSVC;
-- CMake 3.24+;
-- Qt 6.8.x MSVC 2022 x64.
-
-В `cmd.exe`:
-
-```bat
-set QTDIR=C:\Qt\6.8.3\msvc2022_64
-BUILD_WINDOWS.bat
-```
-
-После сборки исполняемые файлы находятся в:
-
-```text
-build\windows-msvc\Release\ArenaTES3JSON.exe
-build\windows-msvc\Release\ArenaTES3JSON-cli.exe
-```
-
-Для portable-пакета:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package_windows.ps1
-```
+- выбор ESM/ESP/JSON;
+- автоматическое имя выходного файла;
+- Drag & Drop;
+- Windows-1251/1C или raw-режим;
+- compact JSON;
+- lossless sidecar;
+- проверка byte-for-byte пути.
 
 ## CLI
 
 ```bat
-ArenaTES3JSON-cli.exe Morrowind.esm Morrowind.json
-ArenaTES3JSON-cli.exe Morrowind.json Morrowind.esm
-ArenaTES3JSON-cli.exe --verify MyPlugin.esp
+ArenaTES3JSON-cli MFR.esm
+ArenaTES3JSON-cli MFR.json MFR.esm
+ArenaTES3JSON-cli --verify MFR.esm
+ArenaTES3JSON-cli --compact MFR.esm MFR.json
+ArenaTES3JSON-cli --raw-encoding plugin.esp plugin.json
+ArenaTES3JSON-cli --no-lossless plugin.esp plugin.json
 ```
 
-Полезные флаги:
+## Сборка Windows
 
-```text
---compact       компактный JSON
---verify        round-trip и byte-for-byte проверка
-```
+Нужны:
 
-## Как редактировать строки
+- Visual Studio 2022 / MSVC x64;
+- CMake 3.24+;
+- Qt 6.5+ MSVC kit;
+- Rust **nightly** + Cargo.
 
 Пример:
 
-```json
-{
-  "type": "NAME",
-  "data_b64": "...",
-  "data_sha256": "...",
-  "text": "Русское имя",
-  "trailing_nuls": 1
-}
+```bat
+rustup toolchain install nightly
+rustup default nightly
+set QTDIR=C:\Qt\6.8.3\msvc2022_64
+BUILD_WINDOWS.bat
 ```
 
-Если изменить только `text`, программа кодирует новую строку в Windows-1251 и заменит данные только этой подзаписи. Если изменить `data_b64`, именно raw-байты считаются намеренной правкой.
+Готовый архив появится в:
 
-Подробнее: `docs/JSON_FORMAT_RU.md`.
+```text
+dist\ArenaTES3JSON-windows-x64.zip
+```
+
+GitHub Actions выполняет ту же сборку автоматически.
+
+Подробности JSON: `docs/JSON_FORMAT_RU.md`.

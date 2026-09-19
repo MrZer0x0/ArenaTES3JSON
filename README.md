@@ -1,67 +1,40 @@
 # ArenaTES3JSON
 
-Qt/C++ конвертер **Morrowind TES3 plugins**: `.esm/.esp ↔ .json`.
+ArenaTES3JSON is a Qt 6 application for **TES3 ESM/ESP ↔ JSON** conversion.
 
-Цель проекта — заменить сценарий `tes3conv`, где обратная сериализация через объектную модель может нормализовать plugin и менять его размер даже без ручных правок. ArenaTES3JSON работает на уровне оригинальных TES3 record/subrecord и не зависит от `tes3conv`.
+Version 0.2 outputs the same semantic JSON shape as tes3conv (the supplied `MFR.json` style): a top-level array containing objects such as `Header`, `GameSetting`, `Class`, `Npc`, `Cell`, and `DialogueInfo`. The JSON contains no Arena-specific raw record fields.
 
-## Главное
+## Goals
 
-- ESM/ESP → JSON и JSON → ESM/ESP.
-- Lossless round-trip: неизменённый JSON должен собираться **byte-for-byte** как исходный plugin.
-- Сохраняются порядок records/subrecords, `unknown`, `flags`, неизвестные бинарные payload и хвостовые данные.
-- Нативное декодирование/кодирование **Windows-1251** для русской 1C-локализации; JSON остаётся стандартным UTF-8.
-- Qt 6 GUI + отдельный CLI.
-- Drag & Drop в GUI.
-- Проверка `--verify`, которая делает ESM/ESP → JSON model → ESM/ESP в памяти и сравнивает байты.
-- GitHub Actions для Windows 2022 / MSVC 2022 / Qt 6.8.3.
+- tes3conv-compatible semantic JSON;
+- Windows-1251 / Russian 1C text conversion to real Unicode JSON;
+- byte-for-byte restoration when an exported JSON has not been semantically edited;
+- Qt GUI plus command-line frontend;
+- reproducible Windows build with GitHub Actions.
 
-> В проекте нет BSA-конвертации. ArenaTES3JSON работает только с TES3 `.esm/.esp` plugins и JSON.
+## Lossless mode
 
-## Сборка Windows
+Semantic JSON cannot represent every physical detail of the original plugin binary. ArenaTES3JSON therefore stores lossless data outside the JSON:
 
-Требуется Qt 6.5+ (рекомендуется Qt 6.8.x MSVC 2022), CMake 3.24+ и Visual Studio 2022 Build Tools.
+```text
+MFR.esm -> MFR.json + MFR.arena-lossless
+```
+
+If the JSON is semantically unchanged, importing it restores the original plugin bytes exactly. Whitespace and JSON object-key order do not invalidate the semantic hash. If the JSON was edited, or the sidecar is unavailable, the plugin is rebuilt from the semantic TES3 data.
+
+## Windows-1251 / 1C
+
+The default text mode maps the single-byte Russian Windows-1251 representation used by 1C localizations to Unicode in JSON and back during plugin generation. A raw mode is also available.
+
+## Build
+
+Requirements: Visual Studio 2022, CMake 3.24+, Qt 6.5+ MSVC x64, and Rust nightly.
 
 ```bat
+rustup toolchain install nightly
+rustup default nightly
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```
 
-После сборки:
-
-```text
-build\windows-msvc\Release\ArenaTES3JSON.exe
-build\windows-msvc\Release\ArenaTES3JSON-cli.exe
-```
-
-Portable ZIP:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package_windows.ps1
-```
-
-## CLI
-
-```text
-ArenaTES3JSON-cli MyMod.esp MyMod.json
-ArenaTES3JSON-cli MyMod.json MyMod.esp
-ArenaTES3JSON-cli --compact MyMod.esm MyMod.json
-ArenaTES3JSON-cli --verify MyMod.esp
-```
-
-При JSON → plugin расширение `.esm`/`.esp` берётся из `source.extension`, если выходной путь не задан.
-
-## Про Windows-1251 / 1C
-
-Старые русские плагины Morrowind часто содержат строки в Windows-1251. ArenaTES3JSON содержит собственную обратимую таблицу CP1251 и не использует трюк «прочитать байты как Latin-1, а затем визуально заменить символы». В JSON русский текст хранится нормальным Unicode UTF-8, а при обратной сборке кодируется в исходную Windows-1251.
-
-## Формат JSON
-
-См. [docs/JSON_FORMAT_RU.md](docs/JSON_FORMAT_RU.md).
-
-## Ограничение v0.1
-
-Это **lossless низкоуровневый** JSON: все records/subrecords доступны, строки автоматически раскрываются как CP1251, остальные данные сохраняются как Base64. Полная семантическая расшифровка каждого бинарного TES3-типа (NPC_, CELL, LAND и т. д.) может добавляться поверх этого слоя без риска потерять исходные байты.
-
-## Лицензия
-
-MIT.
+See `README_RU.md` and `docs/JSON_FORMAT_RU.md` for details.

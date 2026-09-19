@@ -1,32 +1,14 @@
 @echo off
 setlocal
-
-if "%QTDIR%"=="" if not "%QT_ROOT_DIR%"=="" set "QTDIR=%QT_ROOT_DIR%"
+where cmake >nul 2>nul || (echo CMake not found & exit /b 1)
+where cargo >nul 2>nul || (echo Rust/Cargo not found & exit /b 1)
 if "%QTDIR%"=="" (
-  echo Set QTDIR first. Example:
-  echo   set QTDIR=C:\Qt\6.8.3\msvc2022_64
+  echo Set QTDIR to a Qt 6 MSVC kit, for example C:\Qt\6.8.3\msvc2022_64
   exit /b 1
 )
-
-if not exist "%QTDIR%\bin\qmake.exe" (
-  echo QTDIR does not look like a Qt MSVC kit:
-  echo   %QTDIR%
-  exit /b 1
-)
-
-rem Force the Visual Studio 2022 x64 generator. Do not use an arbitrary
-rem compiler from PATH: a MinGW compiler cannot be mixed with win64_msvc2022_64.
-cmake -S . -B build\windows-msvc -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="%QTDIR%"
-if errorlevel 1 exit /b 1
-
-cmake --build build\windows-msvc --config Release --parallel
-if errorlevel 1 exit /b 1
-
-ctest --test-dir build\windows-msvc -C Release --output-on-failure
-if errorlevel 1 exit /b 1
-
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="%QTDIR%" || exit /b 1
+cmake --build build --config Release --parallel || exit /b 1
+ctest --test-dir build -C Release --output-on-failure || exit /b 1
+powershell -ExecutionPolicy Bypass -File scripts\package_windows.ps1 -BuildDir build\Release -OutDir dist\ArenaTES3JSON || exit /b 1
 echo.
-echo Built:
-echo   build\windows-msvc\Release\ArenaTES3JSON.exe
-echo   build\windows-msvc\Release\ArenaTES3JSON-cli.exe
-endlocal
+echo Done: dist\ArenaTES3JSON-windows-x64.zip

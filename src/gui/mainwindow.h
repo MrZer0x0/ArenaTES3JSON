@@ -3,9 +3,12 @@
 #include <QMainWindow>
 
 class QCheckBox;
+class QComboBox;
 class QLineEdit;
 class QPushButton;
 class QTextEdit;
+class QDragEnterEvent;
+class QDropEvent;
 
 namespace arena::tes3json {
 
@@ -28,7 +31,9 @@ private slots:
 private:
     QLineEdit *m_input = nullptr;
     QLineEdit *m_output = nullptr;
+    QComboBox *m_encoding = nullptr;
     QCheckBox *m_compact = nullptr;
+    QCheckBox *m_lossless = nullptr;
     QPushButton *m_convert = nullptr;
     QTextEdit *m_log = nullptr;
 };

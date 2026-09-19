@@ -1,7 +1,10 @@
 /build/
 /dist/
+/target/
+/core-rs/target/
 /.vs/
 /.idea/
 *.user
 *.suo
 *.VC.db
+*.arena-lossless

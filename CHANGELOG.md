@@ -1,22 +1,22 @@
 # Changelog
 
-## 0.1.1 - 2026-09-19
+## 0.2.0
 
-- Fixed Qt 6.8 build failure caused by the deleted `QChar(uchar)` constructor.
-- Fixed GitHub Actions toolchain selection: Windows builds now explicitly use Visual Studio 2022 x64/MSVC to match the `win64_msvc2022_64` Qt package.
-- Updated Windows build preset, batch build script, test invocation and packaging paths for the multi-config MSVC generator.
-- Packaging now accepts GitHub Actions `QT_ROOT_DIR` as well as local `QTDIR`.
-- Corrected README build paths and CLI examples to match the implemented command-line interface.
-- Text subrecords now also retain `data_b64` + `data_sha256`; deliberate raw edits take precedence over `text`.
-- Expanded self-test with full defined CP1251 byte round-trip coverage and raw-edit precedence.
+- Replaced the incorrect low-level Arena JSON schema with tes3conv-compatible semantic JSON.
+- JSON root is now the TES3 object array (`Header`, `GameSetting`, `Npc`, `Cell`, `DialogueInfo`, etc.).
+- Pinned the TES3 object model to the revision used by the supplied tes3conv GUI for schema compatibility.
+- Added Windows-1251/1C translation for the complete high half of CP1251.
+- Added `.arena-lossless` sidecar so an unedited semantic JSON can restore the exact original ESP/ESM bytes and size.
+- Semantic sidecar hash ignores JSON formatting and object-key order.
+- Qt GUI now exposes Windows-1251/raw and lossless options.
+- Added Rust semantic backend to the CMake/GitHub Actions build.
 
-## 0.1.0 - 2026-09-19
+## 0.1.1
 
-- Initial Qt 6 repository.
-- Direct TES3 record/subrecord parser and writer.
-- Byte-preserving base64 interchange format.
-- Built-in Windows-1251 / 1C codec.
-- Human-readable editable text fields.
-- SHA-256 lossless verification.
-- Qt Widgets GUI, drag & drop and CLI.
-- Windows GitHub Actions build and packaging.
+- Fixed Qt 6.8 `QChar(uchar)` build error.
+- Fixed MSVC/MinGW toolchain mismatch in CI.
+- Fixed `QT_ROOT_DIR` packaging support.
+
+## 0.1.0
+
+- Initial low-level prototype. Its JSON schema is deprecated and is not compatible with 0.2.

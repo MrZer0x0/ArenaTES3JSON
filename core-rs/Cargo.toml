@@ -1,0 +1,30 @@
+[package]
+name = "arenates3json-core"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "ArenaTES3JSON-core"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+sha2 = "0.10"
+zstd = "0.13"
+
+# Pinned to the same TES3 object model used by the supplied tes3conv GUI.
+# This is what gives ArenaTES3JSON tes3conv-compatible semantic JSON.
+[dependencies.tes3]
+git = "https://github.com/Greatness7/tes3"
+rev = "95cbc2cad2c574b023da879e308d3f6f6c4c3e04"
+default-features = false
+features = ["esp", "nightly", "simd", "serde"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
