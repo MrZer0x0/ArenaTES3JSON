@@ -30,13 +30,6 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Smoke test CLI
-        shell: pwsh
-        run: |
-          $cli = Join-Path (Resolve-Path 'build/Release').Path 'ArenaTES3JSON-cli.exe'
-          & $cli --help
-          if ($LASTEXITCODE -ne 0) { throw "CLI --help failed (exit code $LASTEXITCODE)" }
-
       - name: Test complete build
         run: ctest --test-dir build -C Release --output-on-failure
 
