@@ -7,7 +7,7 @@ ArenaTES3JSON has two compatibility contracts:
 
 Before a pull request:
 
-1. Run `cargo test --manifest-path core-rs/Cargo.toml` with Rust nightly.
+1. Run `cargo test --manifest-path core-rs/Cargo.toml` with Rust stable.
 2. Build the Qt project.
 3. Run `ctest --test-dir build -C Release --output-on-failure` on Windows/MSVC.
 4. Test at least one Russian Windows-1251/1C plugin.

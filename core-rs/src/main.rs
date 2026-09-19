@@ -93,7 +93,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn usage() -> &'static str {
-    "ArenaTES3JSON-core 0.2.0\n\
+    "ArenaTES3JSON-core 0.2.1\n\
      Usage:\n\
        ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding cp1251|raw] [--no-lossless]\n\
        ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding cp1251|raw] [--no-lossless]\n\
@@ -108,7 +108,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ArenaTES3JSON-core 0.2.0");
+        println!("ArenaTES3JSON-core 0.2.1");
         std::process::exit(0);
     }
 

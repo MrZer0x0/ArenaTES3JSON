@@ -6,7 +6,7 @@
 
 GUI написан на **Qt 6**, семантический backend — на Rust и использует TES3 object model. Формат JSON совместим с `tes3conv` и с присланным примером `MFR.json`.
 
-## Главное отличие 0.2
+## Главное отличие 0.2.1
 
 JSON больше не выглядит как низкоуровневые `records/subrecords/data_b64`.
 
@@ -98,13 +98,13 @@ ArenaTES3JSON-cli --no-lossless plugin.esp plugin.json
 - Visual Studio 2022 / MSVC x64;
 - CMake 3.24+;
 - Qt 6.5+ MSVC kit;
-- Rust **nightly** + Cargo.
+- Rust **stable** + Cargo.
 
 Пример:
 
 ```bat
-rustup toolchain install nightly
-rustup default nightly
+rustup toolchain install stable
+rustup default stable
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```

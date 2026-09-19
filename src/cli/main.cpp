@@ -14,7 +14,7 @@ int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("ArenaTES3JSON-cli"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.1"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("TES3 ESM/ESP <-> tes3conv-compatible JSON converter"));

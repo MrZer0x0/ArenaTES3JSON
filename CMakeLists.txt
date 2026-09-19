@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ArenaTES3JSON VERSION 0.2.0 LANGUAGES CXX)
+project(ArenaTES3JSON VERSION 0.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +27,8 @@ set(RUST_CORE_STAGE "${CMAKE_BINARY_DIR}/rust-bin/${RUST_CORE_EXE}")
 
 file(GLOB_RECURSE RUST_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/core-rs/src/*.rs"
-    "${CMAKE_CURRENT_SOURCE_DIR}/core-rs/Cargo.toml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/core-rs/Cargo.toml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml")
 
 add_custom_command(
     OUTPUT "${RUST_CORE_STAGE}"

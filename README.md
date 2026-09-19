@@ -2,7 +2,7 @@
 
 ArenaTES3JSON is a Qt 6 application for **TES3 ESM/ESP ↔ JSON** conversion.
 
-Version 0.2 outputs the same semantic JSON shape as tes3conv (the supplied `MFR.json` style): a top-level array containing objects such as `Header`, `GameSetting`, `Class`, `Npc`, `Cell`, and `DialogueInfo`. The JSON contains no Arena-specific raw record fields.
+Version 0.2.1 outputs the same semantic JSON shape as tes3conv (the supplied `MFR.json` style): a top-level array containing objects such as `Header`, `GameSetting`, `Class`, `Npc`, `Cell`, and `DialogueInfo`. The JSON contains no Arena-specific raw record fields.
 
 ## Goals
 
@@ -28,11 +28,11 @@ The default text mode maps the single-byte Russian Windows-1251 representation u
 
 ## Build
 
-Requirements: Visual Studio 2022, CMake 3.24+, Qt 6.5+ MSVC x64, and Rust nightly.
+Requirements: Visual Studio 2022, CMake 3.24+, Qt 6.5+ MSVC x64, and Rust stable.
 
 ```bat
-rustup toolchain install nightly
-rustup default nightly
+rustup toolchain install stable
+rustup default stable
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```
