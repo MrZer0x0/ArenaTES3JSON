@@ -4,6 +4,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QDateTimeEdit>
+#include <QSignalBlocker>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
@@ -57,8 +60,8 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("ArenaTES3JSON %1").arg(QCoreApplication::applicationVersion()));
     setWindowIcon(QIcon(QStringLiteral(":/ArenaTES3JSON.png")));
-    resize(720, 370);
-    setMinimumSize(620, 340);
+    resize(790, 455);
+    setMinimumSize(670, 420);
     setAcceptDrops(true);
 
     auto *central = new QWidget(this);
@@ -126,6 +129,33 @@ MainWindow::MainWindow(QWidget *parent)
     optionsRow->addWidget(m_repairScripts, 1);
     layout->addLayout(optionsRow);
 
+    auto *exportRow = new QHBoxLayout();
+    exportRow->addWidget(new QLabel(text("Plugin type:", "Тип плагина:"), central));
+    m_pluginType = new QComboBox(central);
+    m_pluginType->addItem(text("From JSON header", "Из заголовка JSON"), QStringLiteral("original"));
+    m_pluginType->addItem(QStringLiteral("ESP"), QStringLiteral("esp"));
+    m_pluginType->addItem(QStringLiteral("ESM"), QStringLiteral("esm"));
+    exportRow->addWidget(m_pluginType);
+    exportRow->addSpacing(12);
+    exportRow->addWidget(new QLabel(text("File date:", "Дата файла:"), central));
+    m_dateMode = new QComboBox(central);
+    m_dateMode->addItem(text("Restore from JSON", "Восстановить из JSON"), QStringLiteral("original"));
+    m_dateMode->addItem(text("Current date and time", "Текущая дата и время"), QStringLiteral("now"));
+    m_dateMode->addItem(text("Custom date and time", "Своя дата и время"), QStringLiteral("custom"));
+    exportRow->addWidget(m_dateMode);
+    m_customDate = new QDateTimeEdit(QDateTime::currentDateTime(), central);
+    m_customDate->setDisplayFormat(QStringLiteral("dd.MM.yyyy HH:mm:ss"));
+    m_customDate->setCalendarPopup(true);
+    m_customDate->setToolTip(text("Local Windows time (converted to UTC on save)",
+                                   "Местное время Windows (при сохранении переводится в UTC)"));
+    exportRow->addWidget(m_customDate);
+    exportRow->addStretch(1);
+    layout->addLayout(exportRow);
+
+    m_fileDateInfo = new QLabel(text("Original file date: —", "Дата исходного файла: —"), central);
+    m_fileDateInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(m_fileDateInfo);
+
     m_direction = new QLabel(text("Direction: —", "Направление: —"), central);
     layout->addWidget(m_direction);
 
@@ -163,6 +193,19 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_inputBrowse, &QPushButton::clicked, this, &MainWindow::browseInput);
     connect(m_outputBrowse, &QPushButton::clicked, this, &MainWindow::browseOutput);
     connect(m_input, &QLineEdit::textChanged, this, &MainWindow::updateForInput);
+    connect(m_pluginType, &QComboBox::currentIndexChanged, this, &MainWindow::updateOutputType);
+    connect(m_dateMode, &QComboBox::currentIndexChanged, this, &MainWindow::updatePluginOptions);
+    connect(m_output, &QLineEdit::textEdited, this, [this](const QString &path) {
+        if (QFileInfo(m_input->text()).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) != 0) return;
+        const QString ext = QFileInfo(path).suffix().toLower();
+        if (ext == QStringLiteral("esp") || ext == QStringLiteral("esm")) {
+            const int index = m_pluginType->findData(ext);
+            if (index >= 0 && m_pluginType->currentIndex() != index) {
+                QSignalBlocker blocker(m_pluginType);
+                m_pluginType->setCurrentIndex(index);
+            }
+        }
+    });
     connect(m_encoding, &QComboBox::currentTextChanged, this, [this] { scheduleInspection(); });
     connect(m_convert, &QPushButton::clicked, this, &MainWindow::convert);
     connect(m_inspectTimer, &QTimer::timeout, this, &MainWindow::startInspection);
@@ -179,6 +222,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_process, &QProcess::errorOccurred, this, &MainWindow::backendError);
 
     updateForInput();
+    updatePluginOptions();
 }
 
 QString MainWindow::text(const char *english, const char *russian) const
@@ -248,7 +292,19 @@ void MainWindow::browseOutput()
         this,
         text("Save result", "Сохранить результат"),
         m_output->text());
-    if (!path.isEmpty()) m_output->setText(path);
+    if (!path.isEmpty()) {
+        m_output->setText(path);
+        if (QFileInfo(m_input->text()).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0) {
+            const QString suffix = QFileInfo(path).suffix().toLower();
+            if (suffix == QStringLiteral("esp") || suffix == QStringLiteral("esm")) {
+                const int index = m_pluginType->findData(suffix);
+                if (index >= 0) {
+                    QSignalBlocker blocker(m_pluginType);
+                    m_pluginType->setCurrentIndex(index);
+                }
+            }
+        }
+    }
 }
 
 QString MainWindow::directionText() const
@@ -277,14 +333,47 @@ void MainWindow::updateForInput()
         m_direction->setText(text("Direction: —", "Направление: —"));
         m_fileInfo->setText(text("File: not selected", "Файл: не выбран"));
         m_repairScripts->setEnabled(false);
+        m_fileDateInfo->setText(text("Original file date: —", "Дата исходного файла: —"));
+        updatePluginOptions();
         return;
     }
 
+    {
+        QSignalBlocker blocker(m_pluginType);
+        m_pluginType->setCurrentIndex(0);
+    }
     m_output->setText(Converter::defaultOutputFor(path));
     m_direction->setText(text("Direction: %1", "Направление: %1").arg(directionText()));
     const bool jsonInput = QFileInfo(path).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
     m_repairScripts->setEnabled(jsonInput);
+    m_fileDateInfo->setText(text("Original file date: —", "Дата исходного файла: —"));
+    updatePluginOptions();
     scheduleInspection();
+}
+
+void MainWindow::updatePluginOptions()
+{
+    const bool jsonInput = QFileInfo(m_input->text()).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
+    const bool idle = !m_busy && m_process->state() == QProcess::NotRunning;
+    m_pluginType->setEnabled(jsonInput && idle);
+    m_dateMode->setEnabled(jsonInput && idle);
+    m_customDate->setEnabled(jsonInput && idle && m_dateMode->currentData().toString() == QStringLiteral("custom"));
+}
+
+void MainWindow::updateOutputType()
+{
+    if (QFileInfo(m_input->text()).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) != 0) return;
+    const QString kind = m_pluginType->currentData().toString();
+    QString ext = kind;
+    if (kind == QStringLiteral("original")) {
+        ext = QFileInfo(Converter::defaultOutputFor(m_input->text())).suffix().toLower();
+    }
+    if (ext != QStringLiteral("esp") && ext != QStringLiteral("esm")) return;
+    const QString output = m_output->text();
+    if (output.isEmpty()) return;
+    QFileInfo info(output);
+    if (info.suffix().compare(ext, Qt::CaseInsensitive) == 0) return;
+    m_output->setText(info.dir().filePath(info.completeBaseName() + QLatin1Char('.') + ext));
 }
 
 void MainWindow::scheduleInspection()
@@ -330,6 +419,25 @@ void MainWindow::inspectionFinished(int exitCode, QProcess::ExitStatus exitStatu
 
     try {
         const InspectionResult info = Converter::parseInspectionStatus(m_inspectStdout);
+        if (!info.fileMtimeUtc.isEmpty()) {
+            // Qt display supports milliseconds; preserve original nanoseconds
+            // in JSON/backend and truncate only this display copy.
+            QString displayDate = info.fileMtimeUtc;
+            const qsizetype dot = displayDate.indexOf(QLatin1Char('.'));
+            const qsizetype zulu = displayDate.lastIndexOf(QLatin1Char('Z'));
+            if (dot >= 0 && zulu > dot + 4) {
+                displayDate = displayDate.left(dot + 4) + displayDate.mid(zulu);
+            }
+            QDateTime timestamp = QDateTime::fromString(displayDate, Qt::ISODateWithMs);
+            if (!timestamp.isValid()) timestamp = QDateTime::fromString(displayDate, Qt::ISODate);
+            const QString label = timestamp.isValid()
+                ? timestamp.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm:ss"))
+                : info.fileMtimeUtc;
+            m_fileDateInfo->setText(text("Original file date: %1 (Windows local time)",
+                                         "Дата исходного файла: %1 (местное время Windows)").arg(label));
+        } else {
+            m_fileDateInfo->setText(text("Original file date: not recorded", "Дата исходного файла: не сохранена"));
+        }
         m_fileInfo->setText(
             text("File: %1 • %2 • %3 objects • encoding: %4",
                  "Файл: %1 • %2 • %3 объектов • кодировка: %4")
@@ -346,10 +454,12 @@ void MainWindow::inspectionFinished(int exitCode, QProcess::ExitStatus exitStatu
 
 void MainWindow::setBusy(bool busy)
 {
+    m_busy = busy;
     m_input->setEnabled(!busy);
     m_output->setEnabled(!busy);
     m_encoding->setEnabled(!busy);
     m_repairScripts->setEnabled(!busy && QFileInfo(m_input->text()).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0);
+    updatePluginOptions();
     m_inputBrowse->setEnabled(!busy);
     m_outputBrowse->setEnabled(!busy);
     m_convert->setEnabled(!busy);
@@ -387,8 +497,16 @@ void MainWindow::convert()
 
     QStringList arguments{command, m_input->text(), m_output->text(),
                           QStringLiteral("--encoding"), selectedEncoding()};
-    if (command == QStringLiteral("to-plugin") && m_repairScripts->isChecked()) {
-        arguments << QStringLiteral("--repair-scripts") << QStringLiteral("changed");
+    if (command == QStringLiteral("to-plugin")) {
+        const QString mode = m_dateMode->currentData().toString();
+        const QString date = mode == QStringLiteral("custom")
+            ? m_customDate->dateTime().toUTC().toString(Qt::ISODateWithMs)
+            : mode;
+        arguments << QStringLiteral("--file-date") << date
+                  << QStringLiteral("--file-type") << m_pluginType->currentData().toString();
+        if (m_repairScripts->isChecked()) {
+            arguments << QStringLiteral("--repair-scripts") << QStringLiteral("changed");
+        }
     }
 
     m_process->setProgram(Converter::backendPath());

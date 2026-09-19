@@ -7,6 +7,7 @@
 #include <QProcess>
 
 class QCheckBox;
+class QDateTimeEdit;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -31,6 +32,8 @@ private slots:
     void browseInput();
     void browseOutput();
     void updateForInput();
+    void updatePluginOptions();
+    void updateOutputType();
     void scheduleInspection();
     void startInspection();
     void inspectionFinished(int exitCode, QProcess::ExitStatus exitStatus);
@@ -50,10 +53,15 @@ private:
     QString text(const char *english, const char *russian) const;
 
     UiLanguage m_language = UiLanguage::English;
+    bool m_busy = false;
     QLineEdit *m_input = nullptr;
     QLineEdit *m_output = nullptr;
     QComboBox *m_encoding = nullptr;
     QCheckBox *m_repairScripts = nullptr;
+    QComboBox *m_dateMode = nullptr;
+    QDateTimeEdit *m_customDate = nullptr;
+    QComboBox *m_pluginType = nullptr;
+    QLabel *m_fileDateInfo = nullptr;
     QLabel *m_direction = nullptr;
     QLabel *m_fileInfo = nullptr;
     QLabel *m_status = nullptr;

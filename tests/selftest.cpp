@@ -41,11 +41,13 @@ int main(int argc, char **argv)
     }
 
     const auto inspection = Converter::parseInspectionStatus(
-        QByteArrayLiteral("{\"ok\":true,\"kind\":\"ESM\",\"size\":52374720,\"encoding\":\"windows-1251\",\"objects\":51240}"));
+        QByteArrayLiteral("{\"ok\":true,\"kind\":\"ESM\",\"size\":52374720,\"encoding\":\"windows-1251\",\"objects\":51240,\"plugin_type\":\"Esm\",\"file_mtime_utc\":\"2002-05-01T12:34:56Z\"}"));
     if (inspection.kind != QStringLiteral("ESM")
         || inspection.encoding != QStringLiteral("windows-1251")
         || inspection.size != 52374720
-        || inspection.objects != 51240) {
+        || inspection.objects != 51240
+        || inspection.pluginType != QStringLiteral("Esm")
+        || inspection.fileMtimeUtc != QStringLiteral("2002-05-01T12:34:56Z")) {
         out << "Inspection status parsing failed" << Qt::endl;
         return 32;
     }

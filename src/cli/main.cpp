@@ -18,7 +18,7 @@ int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("ArenaTES3JSON-cli"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.4.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.4.1"));
 
     const UiLanguage language = systemUiLanguage();
 
@@ -42,6 +42,16 @@ int main(int argc, char **argv)
         l10n(language,
              "Repair changed script SCHD/SCVR and discard stale SCDT",
              "Исправлять SCHD/SCVR изменённых скриптов и удалять устаревший SCDT")));
+    parser.addOption(QCommandLineOption(
+        QStringLiteral("file-date"),
+        l10n(language, "Output plugin mtime: original, now, or an RFC3339 date/time",
+                       "Дата изменения плагина: original, now или дата/время RFC3339"),
+        QStringLiteral("date"), QStringLiteral("original")));
+    parser.addOption(QCommandLineOption(
+        QStringLiteral("file-type"),
+        l10n(language, "Output header type: original, esp, or esm",
+                       "Тип заголовка результата: original, esp или esm"),
+        QStringLiteral("type"), QStringLiteral("original")));
     parser.addPositionalArgument(QStringLiteral("input"),
                                  l10n(language, "Input .esm/.esp/.json", "Входной .esm/.esp/.json"));
     parser.addPositionalArgument(QStringLiteral("output"),
@@ -60,7 +70,13 @@ int main(int argc, char **argv)
 
     try {
         const QString ext = QFileInfo(input).suffix().toLower();
-        const QString output = positional.size() >= 2 ? positional.at(1) : Converter::defaultOutputFor(input);
+        QString output = positional.size() >= 2 ? positional.at(1) : Converter::defaultOutputFor(input);
+        const QString requestedType = parser.value(QStringLiteral("file-type")).toLower();
+        if (ext == QStringLiteral("json") && positional.size() < 2
+            && (requestedType == QStringLiteral("esp") || requestedType == QStringLiteral("esm"))) {
+            QFileInfo autoOutput(output);
+            output = autoOutput.dir().filePath(autoOutput.completeBaseName() + QLatin1Char('.') + requestedType);
+        }
         if (ext == QStringLiteral("esm") || ext == QStringLiteral("esp")) {
             const auto result = Converter::pluginToJson(
                 input, output, parser.isSet(QStringLiteral("compact")), encoding);
@@ -69,7 +85,8 @@ int main(int argc, char **argv)
                 << l10n(language, "bytes", "байт") << " • " << result.encoding << Qt::endl;
         } else if (ext == QStringLiteral("json")) {
             const auto result = Converter::jsonToPlugin(
-                input, output, encoding, parser.isSet(QStringLiteral("repair-scripts")));
+                input, output, encoding, parser.isSet(QStringLiteral("repair-scripts")),
+                parser.value(QStringLiteral("file-date")), requestedType);
             out << l10n(language, "Plugin", "Плагин") << ": " << result.outputPath << Qt::endl;
             out << result.inputSize << " -> " << result.outputSize << " "
                 << l10n(language, "bytes", "байт") << " • " << result.encoding << Qt::endl;

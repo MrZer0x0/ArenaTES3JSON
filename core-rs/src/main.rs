@@ -8,6 +8,8 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tes3::esp::Plugin;
 
 // The TES3 crate transports plugin strings through Windows-1252. ArenaTES3JSON
@@ -44,6 +46,8 @@ struct Cli {
     compact: bool,
     encoding: String,
     repair_scripts: RepairScriptsMode,
+    file_date: String,
+    file_type: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,10 +83,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn usage() -> &'static str {
-    "ArenaTES3JSON-core 0.4.0\n\
+    "ArenaTES3JSON-core 0.4.1\n\
      Usage:\n\
        ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding auto|LABEL]\n\
-       ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding auto|LABEL] [--repair-scripts off|changed|all]\n\
+       ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding auto|LABEL] [--repair-scripts off|changed|all] [--file-date original|now|RFC3339] [--file-type original|esp|esm]\n\
        ArenaTES3JSON-core inspect INPUT.esm [--encoding auto|LABEL]\n"
 }
 
@@ -93,7 +97,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ArenaTES3JSON-core 0.4.0");
+        println!("ArenaTES3JSON-core 0.4.1");
         std::process::exit(0);
     }
 
@@ -106,6 +110,8 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
     let mut compact = false;
     let mut encoding = String::from("auto");
     let mut repair_scripts = RepairScriptsMode::Off;
+    let mut file_date = String::from("original");
+    let mut file_type = String::from("original");
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -115,6 +121,20 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
                 let value = args.get(i).ok_or("--encoding requires a value")?;
                 encoding = value.to_owned();
                 validate_encoding_label(&encoding)?;
+            }
+            "--file-date" => {
+                i += 1;
+                file_date = args.get(i).ok_or("--file-date requires original|now|RFC3339")?.clone();
+                if file_date != "original" && file_date != "now" {
+                    parse_file_date(&file_date)?;
+                }
+            }
+            "--file-type" => {
+                i += 1;
+                file_type = args.get(i).ok_or("--file-type requires original|esp|esm")?.to_ascii_lowercase();
+                if !matches!(file_type.as_str(), "original" | "esp" | "esm") {
+                    return Err(format!("unsupported --file-type: {file_type}").into());
+                }
             }
             "--repair-scripts" => {
                 i += 1;
@@ -148,6 +168,8 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         compact,
         encoding,
         repair_scripts,
+        file_date,
+        file_type,
     })
 }
 
@@ -156,6 +178,101 @@ fn report_progress(percent: u8, stage: &str) {
     let _ = io::stderr().flush();
 }
 
+
+
+// Stored as an RFC3339 UTC timestamp on the semantic Header. No sidecar is used.
+// A plugin's mtime is separate from TES3/HEDR and is not a TES3 header field.
+fn format_file_date(date: SystemTime) -> Result<String, Box<dyn std::error::Error>> {
+    let nanos = match date.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos()),
+        Err(error) => {
+            let duration = error.duration();
+            -(i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos()))
+        }
+    };
+    Ok(OffsetDateTime::from_unix_timestamp_nanos(nanos)?.format(&Rfc3339)?)
+}
+
+fn parse_file_date(text: &str) -> Result<SystemTime, Box<dyn std::error::Error>> {
+    let parsed = OffsetDateTime::parse(text, &Rfc3339)?;
+    let nanos = parsed.unix_timestamp_nanos();
+    let magnitude = nanos.unsigned_abs();
+    let seconds = u64::try_from(magnitude / 1_000_000_000)?;
+    let remainder = u32::try_from(magnitude % 1_000_000_000)?;
+    let duration = Duration::new(seconds, remainder);
+    let date = if nanos < 0 { UNIX_EPOCH.checked_sub(duration) } else { UNIX_EPOCH.checked_add(duration) };
+    date.ok_or_else(|| "date outside supported file timestamp range".into())
+}
+
+fn modified_utc_string(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    format_file_date(fs::metadata(path)?.modified()?)
+}
+
+fn header_object(value: &Value) -> Result<&serde_json::Map<String, Value>, Box<dyn std::error::Error>> {
+    value.as_array().and_then(|a| a.first())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("Header"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "first semantic JSON object must be TES3 Header".into())
+}
+
+fn header_file_type(value: &Value) -> Option<String> {
+    header_object(value).ok()?.get("file_type")?.as_str().map(str::to_owned)
+}
+
+fn attach_file_timestamp(value: &mut Value, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let timestamp = modified_utc_string(source)?;
+    let header = value.as_array_mut().and_then(|a| a.first_mut())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("Header"))
+        .and_then(Value::as_object_mut)
+        .ok_or("plugin has no TES3 Header to carry the source file date")?;
+    header.insert("_arena_file_mtime_utc".into(), Value::String(timestamp));
+    Ok(())
+}
+
+fn extract_file_date(value: &Value) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let date = header_object(value)?.get("_arena_file_mtime_utc");
+    match date {
+        None => Ok(None),
+        Some(Value::String(s)) => { parse_file_date(s)?; Ok(Some(s.clone())) }
+        Some(_) => Err("Header._arena_file_mtime_utc must be an RFC3339 string".into()),
+    }
+}
+
+fn override_plugin_file_type(value: &mut Value, requested: &str, output: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let header = value.as_array_mut().and_then(|a| a.first_mut())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("Header"))
+        .and_then(Value::as_object_mut)
+        .ok_or("first semantic JSON object must be TES3 Header")?;
+    let current = header.get("file_type").and_then(Value::as_str).ok_or("Header.file_type missing")?;
+    let chosen = match requested {
+        "original" => current.to_ascii_lowercase(),
+        "esp" | "esm" => requested.to_string(),
+        _ => return Err(format!("invalid file type override: {requested}").into()),
+    };
+    if !matches!(chosen.as_str(), "esp" | "esm") {
+        return Err(format!("unsupported TES3 file_type: {current}").into());
+    }
+    let ext = output.extension().and_then(OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+    if ext != chosen {
+        return Err(format!("output extension .{ext} must match TES3 Header.file_type {chosen}; change output path or --file-type").into());
+    }
+    header.insert("file_type".into(), Value::String(if chosen == "esm" { "Esm" } else { "Esp" }.into()));
+    Ok(chosen)
+}
+
+fn apply_file_date(output: &Path, selection: &str, saved: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let timestamp = match selection {
+        "now" => Some(SystemTime::now()),
+        "original" => saved.as_deref().map(parse_file_date).transpose()?,
+        value => Some(parse_file_date(value)?),
+    };
+    if let Some(timestamp) = timestamp {
+        // Open without truncating, change only mtime, preserve creation/access time.
+        let file = File::options().write(true).open(output)?;
+        file.set_times(fs::FileTimes::new().set_modified(timestamp))?;
+    }
+    Ok(())
+}
 
 fn to_json(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     report_progress(4, "read-plugin");
@@ -184,6 +301,7 @@ fn to_json(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     report_progress(65, "decode-text");
     transform_export_value(&mut value, selected_encoding)?;
 
+    attach_file_timestamp(&mut value, &cli.input)?;
     attach_header_encoding(&mut value, selected_encoding.name())?;
     attach_script_source_hashes(&mut value)?;
     attach_binary_metadata(&mut value, &binary_metadata)?;
@@ -219,6 +337,8 @@ fn to_plugin(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut value: Value = serde_json::from_str(&json_text)?;
     drop(json_text);
     let selected_encoding = resolve_import_encoding(&cli.encoding, &value)?;
+    let original_file_date = extract_file_date(&value)?;
+    let selected_file_type = override_plugin_file_type(&mut value, &cli.file_type, &cli.output)?;
     let binary_metadata = detach_binary_metadata(&mut value)?;
     let repaired_script_indices = repair_scripts_if_requested(&mut value, cli.repair_scripts)?;
     let repaired_scripts = repaired_script_indices.len();
@@ -242,11 +362,13 @@ fn to_plugin(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let binary_repairs = apply_binary_metadata_to_file(&cli.output, &binary_metadata, &repaired_script_indices)?;
 
     report_progress(96, "finish");
+    // This MUST be the last filesystem write. TESCS sorts plugins by mtime.
+    apply_file_date(&cli.output, &cli.file_date, original_file_date)?;
     let output_size = fs::metadata(&cli.output)?.len();
     report_progress(100, "done");
     let message = format!(
-        "plugin rebuilt; encoding={}; script repairs={}; binary repairs={}; NAM9 restored={}",
-        selected_encoding.name(), repaired_scripts, binary_repairs, restored_nam9
+        "plugin rebuilt; encoding={}; type={}; script repairs={}; binary repairs={}; NAM9 restored={}",
+        selected_encoding.name(), selected_file_type, repaired_scripts, binary_repairs, restored_nam9
     );
     emit_status_extra(
         "to-plugin",
@@ -276,6 +398,8 @@ fn inspect_input(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             "size": input_size,
             "encoding": enc.name(),
             "objects": objects,
+            "file_mtime_utc": extract_file_date(&value)?.unwrap_or_default(),
+            "plugin_type": header_file_type(&value).unwrap_or_default(),
         }));
         return Ok(());
     }
@@ -291,6 +415,8 @@ fn inspect_input(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "size": input_size,
         "encoding": enc.name(),
         "objects": plugin.objects.len(),
+        "file_mtime_utc": modified_utc_string(&cli.input)?,
+        "plugin_type": header_file_type(&value).unwrap_or_default(),
     }));
     Ok(())
 }
@@ -893,7 +1019,7 @@ fn repair_scripts_if_requested(
 
 fn remove_arena_metadata(value: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
     let objects = value.as_array_mut().ok_or("semantic JSON root must be an array")?;
-    for o in objects { if let Some(m)=o.as_object_mut() { m.remove("_arena_encoding"); m.remove("_arena_source_hash"); m.remove("_arena_binary"); } }
+    for o in objects { if let Some(m)=o.as_object_mut() { m.remove("_arena_encoding"); m.remove("_arena_source_hash"); m.remove("_arena_binary"); m.remove("_arena_file_mtime_utc"); } }
     Ok(())
 }
 
@@ -1354,6 +1480,43 @@ fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_file_date_roundtrip_and_custom_override() {
+        let path = env::temp_dir().join(format!("ArenaTES3JSON-mtime-{}.esp", std::process::id()));
+        fs::write(&path, b"test").unwrap();
+        let original = "2002-05-01T12:34:56.1234567Z";
+        apply_file_date(&path, original, None).unwrap();
+        let exported = modified_utc_string(&path).unwrap();
+        assert_eq!(parse_file_date(&exported).unwrap(), parse_file_date(original).unwrap());
+        apply_file_date(&path, "now", None).unwrap();
+        apply_file_date(&path, "original", Some(exported.clone())).unwrap();
+        assert_eq!(modified_utc_string(&path).unwrap(), exported);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn timestamp_is_only_a_header_metadata_field() {
+        let path = env::temp_dir().join(format!("ArenaTES3JSON-stamp-{}.esm", std::process::id()));
+        fs::write(&path, b"test").unwrap();
+        let mut value = json!([{"type":"Header", "file_type":"Esm", "masters":[]}]);
+        attach_file_timestamp(&mut value, &path).unwrap();
+        let date = extract_file_date(&value).unwrap().unwrap();
+        assert_eq!(date, modified_utc_string(&path).unwrap());
+        remove_arena_metadata(&mut value).unwrap();
+        assert!(value[0].get("_arena_file_mtime_utc").is_none());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn header_type_override_changes_both_header_and_extension_policy() {
+        let mut value = json!([{"type":"Header", "file_type":"Esm"}]);
+        assert_eq!(override_plugin_file_type(&mut value, "esp", Path::new("MFR.esp")).unwrap(), "esp");
+        assert_eq!(value[0]["file_type"], "Esp");
+        assert!(override_plugin_file_type(&mut value, "esm", Path::new("MFR.esp")).is_err());
+        assert_eq!(override_plugin_file_type(&mut value, "esm", Path::new("MFR.esm")).unwrap(), "esm");
+        assert_eq!(value[0]["file_type"], "Esm");
+    }
+
     use super::*;
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "arenates3json-core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT"
 
@@ -13,6 +13,7 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 encoding_rs = "0.8"
 chardetng = "0.1"
 base64 = "0.22"
+time = { version = "=0.3.36", features = ["formatting", "parsing"] }
 
 # Pinned to the same TES3 object model used by the supplied tes3conv GUI.
 # This gives ArenaTES3JSON the same semantic JSON structure.

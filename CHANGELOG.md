@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Store the original plugin filesystem mtime in Header._arena_file_mtime_utc (RFC3339 UTC) on ESM/ESP → JSON.
+- Restore saved, current or custom mtime after JSON → plugin binary repairs; local Windows date/time picker in RU/EN GUI.
+- Allow explicit ESP/ESM TES3 Header.file_type change, enforce matching output suffix, and provide GUI/CLI options.
+- Add backend tests for timestamp round-trip, metadata cleanup and header type override.
+
 ## 0.4.0
 
 - Added guarded low-level TES3 binary preservation without a separate sidecar file.

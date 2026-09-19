@@ -21,6 +21,8 @@ struct InspectionResult {
     QString encoding;
     qint64 size = 0;
     qint64 objects = 0;
+    QString fileMtimeUtc;
+    QString pluginType;
 };
 
 class Converter final {
@@ -32,7 +34,9 @@ public:
     static ConversionResult jsonToPlugin(const QString &inputPath,
                                          const QString &outputPath,
                                          const QString &encoding = QStringLiteral("auto"),
-                                         bool repairChangedScripts = false);
+                                         bool repairChangedScripts = false,
+                                         const QString &fileDate = QStringLiteral("original"),
+                                         const QString &fileType = QStringLiteral("original"));
     static InspectionResult inspect(const QString &inputPath,
                                     const QString &encoding = QStringLiteral("auto"));
     static QString defaultOutputFor(const QString &inputPath);

@@ -137,6 +137,8 @@ InspectionResult Converter::parseInspectionStatus(const QByteArray &stdoutData)
     result.encoding = obj.value(QStringLiteral("encoding")).toString();
     result.size = static_cast<qint64>(obj.value(QStringLiteral("size")).toDouble());
     result.objects = static_cast<qint64>(obj.value(QStringLiteral("objects")).toDouble());
+    result.fileMtimeUtc = obj.value(QStringLiteral("file_mtime_utc")).toString();
+    result.pluginType = obj.value(QStringLiteral("plugin_type")).toString();
     return result;
 }
 
@@ -160,10 +162,14 @@ ConversionResult Converter::pluginToJson(const QString &inputPath,
 ConversionResult Converter::jsonToPlugin(const QString &inputPath,
                                          const QString &outputPath,
                                          const QString &encoding,
-                                         bool repairChangedScripts)
+                                         bool repairChangedScripts,
+                                         const QString &fileDate,
+                                         const QString &fileType)
 {
     QStringList args{QStringLiteral("to-plugin"), inputPath, outputPath,
-                     QStringLiteral("--encoding"), encoding};
+                     QStringLiteral("--encoding"), encoding,
+                     QStringLiteral("--file-date"), fileDate,
+                     QStringLiteral("--file-type"), fileType};
     if (repairChangedScripts)
         args << QStringLiteral("--repair-scripts") << QStringLiteral("changed");
     return runBackend(args);

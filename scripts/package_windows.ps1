@@ -93,7 +93,7 @@ $IconFile = Join-Path $RepoRoot "resources/ArenaTES3JSON.ico"
 if (-not (Test-Path $IconFile)) { throw "Application icon not found: $IconFile" }
 
 & cmake -S $LauncherSource -B $LauncherBuild -G "Visual Studio 17 2022" -A x64 `
-    "-DPAYLOAD_CAB=$PayloadCab" "-DPAYLOAD_ID=$PayloadId" "-DAPP_VERSION=0.4.0" "-DICON_FILE=$IconFile"
+    "-DPAYLOAD_CAB=$PayloadCab" "-DPAYLOAD_ID=$PayloadId" "-DAPP_VERSION=0.4.1" "-DICON_FILE=$IconFile"
 if ($LASTEXITCODE -ne 0) { throw "Failed to configure one-file launcher" }
 
 & cmake --build $LauncherBuild --config Release --parallel
