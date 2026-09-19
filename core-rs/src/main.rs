@@ -27,6 +27,33 @@ const CP1251_HIGH: [char; 128] = [
     '\u{0448}', '\u{0449}', '\u{044A}', '\u{044B}', '\u{044C}', '\u{044D}', '\u{044E}', '\u{044F}',
 ];
 
+
+// The TES3 crate transports plugin strings through Windows-1252. ArenaTES3JSON
+// presents the same raw bytes as Windows-1251 in JSON. Therefore conversion must
+// bridge by BYTE VALUE, not by casting 0x80..0xFF to Unicode code points.
+//
+// Important example: byte 0x85 is U+2026 (ellipsis) in both code pages. The old
+// numeric pseudo-char approach converted it to U+0085 on import and the TES3
+// writer rejected the script as an encode error.
+const CP1252_HIGH: [char; 128] = [
+    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
+    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+    '\u{00A0}', '\u{00A1}', '\u{00A2}', '\u{00A3}', '\u{00A4}', '\u{00A5}', '\u{00A6}', '\u{00A7}',
+    '\u{00A8}', '\u{00A9}', '\u{00AA}', '\u{00AB}', '\u{00AC}', '\u{00AD}', '\u{00AE}', '\u{00AF}',
+    '\u{00B0}', '\u{00B1}', '\u{00B2}', '\u{00B3}', '\u{00B4}', '\u{00B5}', '\u{00B6}', '\u{00B7}',
+    '\u{00B8}', '\u{00B9}', '\u{00BA}', '\u{00BB}', '\u{00BC}', '\u{00BD}', '\u{00BE}', '\u{00BF}',
+    '\u{00C0}', '\u{00C1}', '\u{00C2}', '\u{00C3}', '\u{00C4}', '\u{00C5}', '\u{00C6}', '\u{00C7}',
+    '\u{00C8}', '\u{00C9}', '\u{00CA}', '\u{00CB}', '\u{00CC}', '\u{00CD}', '\u{00CE}', '\u{00CF}',
+    '\u{00D0}', '\u{00D1}', '\u{00D2}', '\u{00D3}', '\u{00D4}', '\u{00D5}', '\u{00D6}', '\u{00D7}',
+    '\u{00D8}', '\u{00D9}', '\u{00DA}', '\u{00DB}', '\u{00DC}', '\u{00DD}', '\u{00DE}', '\u{00DF}',
+    '\u{00E0}', '\u{00E1}', '\u{00E2}', '\u{00E3}', '\u{00E4}', '\u{00E5}', '\u{00E6}', '\u{00E7}',
+    '\u{00E8}', '\u{00E9}', '\u{00EA}', '\u{00EB}', '\u{00EC}', '\u{00ED}', '\u{00EE}', '\u{00EF}',
+    '\u{00F0}', '\u{00F1}', '\u{00F2}', '\u{00F3}', '\u{00F4}', '\u{00F5}', '\u{00F6}', '\u{00F7}',
+    '\u{00F8}', '\u{00F9}', '\u{00FA}', '\u{00FB}', '\u{00FC}', '\u{00FD}', '\u{00FE}', '\u{00FF}',
+];
+
 #[derive(Debug)]
 struct Cli {
     command: String,
@@ -60,7 +87,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn usage() -> &'static str {
-    "ArenaTES3JSON-core 0.3.0\n\
+    "ArenaTES3JSON-core 0.3.2\n\
      Usage:\n\
        ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding cp1251|raw]\n\
        ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding cp1251|raw]\n"
@@ -73,7 +100,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ArenaTES3JSON-core 0.3.0");
+        println!("ArenaTES3JSON-core 0.3.2");
         std::process::exit(0);
     }
 
@@ -207,7 +234,7 @@ fn transform_export_text(input: &str, mode: EncodingMode) -> String {
     if mode == EncodingMode::Raw {
         return input.to_owned();
     }
-    input.chars().map(cp1251_from_pseudo_char).collect()
+    input.chars().map(cp1251_from_transport_char).collect()
 }
 
 fn transform_import_text(input: &str, mode: EncodingMode) -> String {
@@ -216,8 +243,8 @@ fn transform_import_text(input: &str, mode: EncodingMode) -> String {
     }
     let mut out = String::with_capacity(input.len());
     for c in input.chars() {
-        if let Some(pseudo) = pseudo_char_from_cp1251(c) {
-            out.push(pseudo);
+        if let Some(transport) = transport_char_from_cp1251(c) {
+            out.push(transport);
         } else {
             out.push(c);
         }
@@ -259,23 +286,33 @@ fn transform_import_value(value: &mut Value, mode: EncodingMode) {
     }
 }
 
-fn cp1251_from_pseudo_char(c: char) -> char {
-    let code = c as u32;
-    if !(0x80..=0xFF).contains(&code) {
+fn cp1251_from_transport_char(c: char) -> char {
+    if c.is_ascii() {
         return c;
     }
-    let mapped = CP1251_HIGH[(code as usize) - 0x80];
-    if mapped == '\u{FFFD}' { c } else { mapped }
+
+    // Find which byte the TES3 crate's Windows-1252 string represents, then
+    // interpret that exact byte as Windows-1251 for the JSON view.
+    if let Some(idx) = CP1252_HIGH.iter().position(|mapped| *mapped == c) {
+        let mapped = CP1251_HIGH[idx];
+        if mapped != '\u{FFFD}' {
+            return mapped;
+        }
+    }
+    c
 }
 
-fn pseudo_char_from_cp1251(c: char) -> Option<char> {
+fn transport_char_from_cp1251(c: char) -> Option<char> {
     if c.is_ascii() {
         return None;
     }
+
+    // Reverse of cp1251_from_transport_char(): choose the Windows-1252
+    // character that the TES3 writer will encode to the same byte value.
     CP1251_HIGH
         .iter()
         .position(|mapped| *mapped == c && *mapped != '\u{FFFD}')
-        .and_then(|idx| char::from_u32((idx as u32) + 0x80))
+        .map(|idx| CP1252_HIGH[idx])
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
@@ -309,8 +346,17 @@ mod tests {
 
     #[test]
     fn cp1251_extended_symbols() {
-        assert_eq!(cp1251_from_pseudo_char('\u{00B9}'), '\u{2116}');
-        assert_eq!(pseudo_char_from_cp1251('\u{2116}'), Some('\u{00B9}'));
+        assert_eq!(cp1251_from_transport_char('\u{00B9}'), '\u{2116}');
+        assert_eq!(transport_char_from_cp1251('\u{2116}'), Some('\u{00B9}'));
+    }
+
+    #[test]
+    fn cp1251_punctuation_stays_encodable() {
+        // Regression for Arena_Dealer_script: CP1251 and CP1252 both encode
+        // U+2026 as byte 0x85, so the transport character must stay U+2026.
+        assert_eq!(transport_char_from_cp1251('…'), Some('…'));
+        assert_eq!(cp1251_from_transport_char('…'), '…');
+        assert_eq!(transform_import_text("Это честь…", EncodingMode::Cp1251), "Ýòî ÷åñòü…");
     }
 
     #[test]
@@ -319,9 +365,10 @@ mod tests {
             if byte == 0x98 {
                 continue;
             }
-            let pseudo = char::from_u32(byte).unwrap();
-            let unicode = cp1251_from_pseudo_char(pseudo);
-            assert_eq!(pseudo_char_from_cp1251(unicode), Some(pseudo));
+            let idx = (byte - 0x80) as usize;
+            let transport = CP1252_HIGH[idx];
+            let unicode = cp1251_from_transport_char(transport);
+            assert_eq!(transport_char_from_cp1251(unicode), Some(transport));
         }
     }
 }

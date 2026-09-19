@@ -9,6 +9,7 @@ if "%QTDIR%"=="" (
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="%QTDIR%" || exit /b 1
 cmake --build build --config Release --parallel || exit /b 1
 ctest --test-dir build -C Release --output-on-failure || exit /b 1
-powershell -ExecutionPolicy Bypass -File scripts\package_windows.ps1 -BuildDir build\Release -OutDir dist\ArenaTES3JSON || exit /b 1
+powershell -ExecutionPolicy Bypass -File scripts\package_windows.ps1 -BuildDir build\Release -OutFile dist\ArenaTES3JSON.exe || exit /b 1
 echo.
-echo Done: dist\ArenaTES3JSON-windows-x64.zip
+echo Done: dist\ArenaTES3JSON.exe
+echo One portable EXE; Qt and ArenaTES3JSON-core are bundled inside it.

@@ -1,34 +1,36 @@
 # ArenaTES3JSON
 
-ArenaTES3JSON is a Qt 6 application for **TES3 ESM/ESP ↔ JSON** conversion.
+ArenaTES3JSON converts Morrowind/TES3 plugins between **ESM/ESP and tes3conv-style semantic JSON**.
 
-Version 0.2.1 outputs the same semantic JSON shape as tes3conv (the supplied `MFR.json` style): a top-level array containing objects such as `Header`, `GameSetting`, `Class`, `Npc`, `Cell`, and `DialogueInfo`. The JSON contains no Arena-specific raw record fields.
+Version **0.3.2** writes a clean semantic JSON array with the normal record layout (`Header`, `GameSetting`, `Class`, `Npc`, `Cell`, `DialogueInfo`, etc.). It does not create `.arena-lossless` sidecars and does not add private metadata fields to JSON.
 
-## Goals
+When converting JSON back to ESM/ESP, the plugin is rebuilt from the semantic data. Binary file size and layout may therefore differ from the original even when the JSON was not edited. Semantic plugin data is the compatibility target for this mode.
 
-- tes3conv-compatible semantic JSON;
-- Windows-1251 / Russian 1C text conversion to real Unicode JSON;
-- byte-for-byte restoration when an exported JSON has not been semantically edited;
-- Qt GUI plus command-line frontend;
-- reproducible Windows build with GitHub Actions.
+Windows-1251 / Russian 1C text conversion is enabled by default and covers the full upper half of the CP1251 table. Conversion is bridged by the original byte value through the TES3 backend's Windows-1252 string transport, so punctuation such as `…`, smart quotes and dashes remains writable during JSON -> plugin conversion.
 
-## Lossless mode
+## GUI
 
-Semantic JSON cannot represent every physical detail of the original plugin binary. ArenaTES3JSON therefore stores lossless data outside the JSON:
+The Qt 6 GUI is intentionally small: input, output, auto-detected direction, one Convert button, a 0–100% progress bar, result status, and drag-and-drop.
+
+
+## One-file Windows release
+
+The Windows release artifact contains a single `ArenaTES3JSON.exe`. Qt runtime files and `ArenaTES3JSON-core.exe` are bundled inside it. On first launch the runtime is silently extracted to `%LOCALAPPDATA%\ArenaTES3JSON\0.3.2\app`, so no DLLs or companion executables need to sit beside the downloaded EXE. The cache is refreshed automatically when the embedded payload changes.
+
+The source build still creates the separate GUI/CLI/core targets for development and testing; only the end-user release is packed into one EXE.
+
+## CLI
 
 ```text
-MFR.esm -> MFR.json + MFR.arena-lossless
+ArenaTES3JSON-cli MFR.esm
+ArenaTES3JSON-cli MFR.json MFR.esm
+ArenaTES3JSON-cli --compact MFR.esm MFR.json
+ArenaTES3JSON-cli --raw-encoding plugin.esp plugin.json
 ```
 
-If the JSON is semantically unchanged, importing it restores the original plugin bytes exactly. Whitespace and JSON object-key order do not invalidate the semantic hash. If the JSON was edited, or the sidecar is unavailable, the plugin is rebuilt from the semantic TES3 data.
+## Build on Windows
 
-## Windows-1251 / 1C
-
-The default text mode maps the single-byte Russian Windows-1251 representation used by 1C localizations to Unicode in JSON and back during plugin generation. A raw mode is also available.
-
-## Build
-
-Requirements: Visual Studio 2022, CMake 3.24+, Qt 6.5+ MSVC x64, and Rust stable.
+Requirements: Visual Studio 2022/MSVC x64, CMake 3.24+, Qt 6.5+ MSVC kit, and stable Rust/Cargo.
 
 ```bat
 rustup toolchain install stable
@@ -37,4 +39,6 @@ set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```
 
-See `README_RU.md` and `docs/JSON_FORMAT_RU.md` for details.
+GitHub Actions uses Qt 6.8.3, MSVC 2022 x64 and stable Rust.
+
+Local packaging with `BUILD_WINDOWS.bat` produces `dist\ArenaTES3JSON.exe`.

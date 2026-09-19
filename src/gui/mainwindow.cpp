@@ -21,10 +21,27 @@
 #include <exception>
 
 namespace arena::tes3json {
+namespace {
+
+QString compactErrorText(QString error)
+{
+    constexpr qsizetype kMaxErrorChars = 1800;
+    error = error.trimmed();
+    if (error.size() <= kMaxErrorChars) return error;
+
+    const qsizetype head = 1400;
+    const qsizetype tail = 300;
+    return error.left(head)
+        + QStringLiteral("\n\n… сообщение сокращено …\n\n")
+        + error.right(tail);
+}
+
+} // namespace
+
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.3.0"));
+    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.3.2"));
     setWindowIcon(QIcon(QStringLiteral(":/ArenaTES3JSON.svg")));
     resize(660, 240);
     setMinimumSize(560, 220);
@@ -235,7 +252,7 @@ void MainWindow::backendFinished(int exitCode, QProcess::ExitStatus exitStatus)
         if (error.isEmpty()) error = QString::fromUtf8(m_stdout.trimmed());
         if (error.isEmpty()) error = QStringLiteral("Неизвестная ошибка backend.");
         m_status->setText(QStringLiteral("Ошибка"));
-        QMessageBox::critical(this, QStringLiteral("Ошибка ArenaTES3JSON"), error);
+        QMessageBox::critical(this, QStringLiteral("Ошибка ArenaTES3JSON"), compactErrorText(error));
         return;
     }
 
@@ -246,7 +263,7 @@ void MainWindow::backendFinished(int exitCode, QProcess::ExitStatus exitStatus)
     } catch (const std::exception &error) {
         m_progress->setValue(0);
         m_status->setText(QStringLiteral("Ошибка статуса"));
-        QMessageBox::critical(this, QStringLiteral("Ошибка ArenaTES3JSON"), QString::fromUtf8(error.what()));
+        QMessageBox::critical(this, QStringLiteral("Ошибка ArenaTES3JSON"), compactErrorText(QString::fromUtf8(error.what())));
     }
 }
 

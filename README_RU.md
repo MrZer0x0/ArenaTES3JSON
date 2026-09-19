@@ -4,13 +4,11 @@
 
 **ESM / ESP ↔ JSON**
 
-GUI написан на **Qt 6**, семантический backend — на Rust и использует TES3 object model. Формат JSON совместим с `tes3conv` и с присланным примером `MFR.json`.
+GUI написан на **Qt 6**, семантический backend — на Rust и использует TES3 object model. Формат JSON совпадает по структуре с `tes3conv` и присланным примером `MFR.json`.
 
-## Главное отличие 0.2.1
+## Формат JSON
 
-JSON больше не выглядит как низкоуровневые `records/subrecords/data_b64`.
-
-Он выглядит так же, как tes3conv:
+ArenaTES3JSON создаёт чистый semantic JSON без дополнительных sidecar-файлов и без служебных полей ArenaTES3JSON:
 
 ```json
 [
@@ -38,57 +36,50 @@ JSON больше не выглядит как низкоуровневые `rec
 ]
 ```
 
-Поддерживаются все типы, которые поддерживает закреплённая TES3-библиотека: `Header`, `GameSetting`, `GlobalVariable`, `Class`, `Faction`, `Race`, `Script`, `Npc`, `Cell`, `Landscape`, `Dialogue`, `DialogueInfo` и остальные записи TES3.
+Поддерживаются типы, которые поддерживает закреплённая TES3-библиотека: `Header`, `GameSetting`, `GlobalVariable`, `Class`, `Faction`, `Race`, `Script`, `Npc`, `Cell`, `Landscape`, `Dialogue`, `DialogueInfo` и другие записи TES3.
+
+При `JSON → ESM/ESP` плагин всегда пересобирается из semantic JSON. Поэтому бинарный размер и внутреннее представление могут отличаться от исходного файла даже если JSON не редактировался. Это ожидаемое поведение этой версии; смысловые данные плагина должны сохраняться.
 
 ## Windows-1251 / 1C
 
 Режим **Windows-1251 / 1C** включён по умолчанию. Русские однобайтовые строки преобразуются в нормальный Unicode UTF-8 в JSON и обратно в представление, ожидаемое TES3 writer.
 
-В отличие от старого GUI, таблица включает не только А-Я/а-я и Ё/ё, но полную верхнюю половину Windows-1251, включая `№`, типографские кавычки и тире.
+Таблица включает полную верхнюю половину Windows-1251: А-Я/а-я, Ё/ё, `№`, типографские кавычки, тире и другие символы. Преобразование теперь выполняется по исходному байту через внутреннее Windows-1252-представление TES3 backend, поэтому символы вроде `…`, кавычек и тире корректно собираются обратно в ESM/ESP.
 
-## Почему исходный ESM/ESP больше не должен уменьшаться без правок
+## Упрощённый GUI
 
-Семантический JSON tes3conv не содержит всей информации о физическом бинарном представлении плагина. Поэтому полностью пересобранный файл может иметь другой размер даже при тех же объектах.
+В окне оставлены только нужные элементы:
 
-ArenaTES3JSON решает это без изменения JSON-схемы. При экспорте:
+- входной `.esm`, `.esp` или `.json`;
+- выходной файл;
+- автоматически определяемое направление конвертации;
+- кнопка **Конвертировать**;
+- прогресс 0–100%;
+- короткий итоговый статус;
+- Drag & Drop.
+
+Windows-1251/1C применяется автоматически. Никаких `.arena-lossless`, скрытых блоков или дополнительных файлов программа не создаёт.
+
+
+## Один EXE в Windows-сборке
+
+Release/GitHub Actions теперь выдаёт один файл:
 
 ```text
-MFR.esm
-  ↓
-MFR.json
-MFR.arena-lossless
+ArenaTES3JSON.exe
 ```
 
-`MFR.json` остаётся обычным tes3conv-совместимым JSON. В `.arena-lossless` хранится сжатый исходный бинарник и контрольные суммы.
+Qt DLL и `ArenaTES3JSON-core.exe` упакованы внутрь этого файла. При первом запуске встроенный runtime тихо извлекается в `%LOCALAPPDATA%\ArenaTES3JSON\0.3.2\app`; рядом с загруженным EXE никаких дополнительных файлов не требуется. При изменении встроенного payload кэш обновляется автоматически.
 
-При обратной конвертации:
-
-- если JSON **семантически не изменён**, исходный ESM/ESP восстанавливается **byte-for-byte**, с тем же размером и SHA-256;
-- изменение пробелов/отступов или порядка ключей JSON не считается изменением;
-- если данные JSON реально отредактированы, создаётся новый ESM/ESP через TES3 writer;
-- если sidecar отсутствует, JSON всё равно можно собрать в ESM/ESP обычным способом.
-
-Lossless-sidecar можно отключить в GUI или ключом `--no-lossless`.
-
-## GUI
-
-- выбор ESM/ESP/JSON;
-- автоматическое имя выходного файла;
-- Drag & Drop;
-- Windows-1251/1C или raw-режим;
-- compact JSON;
-- lossless sidecar;
-- проверка byte-for-byte пути.
+Исходная сборка проекта по-прежнему создаёт отдельные GUI/CLI/core для разработки и тестов, но пользовательский Windows-артефакт содержит только один EXE.
 
 ## CLI
 
 ```bat
 ArenaTES3JSON-cli MFR.esm
 ArenaTES3JSON-cli MFR.json MFR.esm
-ArenaTES3JSON-cli --verify MFR.esm
 ArenaTES3JSON-cli --compact MFR.esm MFR.json
 ArenaTES3JSON-cli --raw-encoding plugin.esp plugin.json
-ArenaTES3JSON-cli --no-lossless plugin.esp plugin.json
 ```
 
 ## Сборка Windows
@@ -98,23 +89,23 @@ ArenaTES3JSON-cli --no-lossless plugin.esp plugin.json
 - Visual Studio 2022 / MSVC x64;
 - CMake 3.24+;
 - Qt 6.5+ MSVC kit;
-- Rust **nightly** + Cargo.
+- Rust **stable** + Cargo.
 
 Пример:
 
 ```bat
-rustup toolchain install nightly
-rustup default nightly
+rustup toolchain install stable
+rustup default stable
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
 BUILD_WINDOWS.bat
 ```
 
-Готовый архив появится в:
+Готовая пользовательская сборка появится в:
 
 ```text
-dist\ArenaTES3JSON-windows-x64.zip
+dist\ArenaTES3JSON.exe
 ```
 
-GitHub Actions выполняет ту же сборку автоматически.
+GitHub Actions выполняет ту же сборку автоматически и публикует `ArenaTES3JSON.exe` как единственный файл артефакта.
 
 Подробности JSON: `docs/JSON_FORMAT_RU.md`.
