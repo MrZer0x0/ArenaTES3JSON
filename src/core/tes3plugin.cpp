@@ -66,18 +66,28 @@ bool shortTextTag(QByteArrayView tag)
     return false;
 }
 
+QString dataSha256(QByteArrayView data)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(data.toByteArray(), QCryptographicHash::Sha256).toHex());
+}
+
 QJsonObject encodeSubrecord(const Subrecord &sub)
 {
     QJsonObject obj;
     obj.insert(QStringLiteral("type"), tagToString(sub.type));
     obj.insert(QStringLiteral("size"), sub.data.size());
+
+    // Raw bytes are always retained, even for text subrecords.  data_sha256 lets
+    // the importer distinguish an intentional raw edit from an ordinary text edit.
+    obj.insert(QStringLiteral("data_b64"), QString::fromLatin1(sub.data.toBase64()));
+    obj.insert(QStringLiteral("data_sha256"), dataSha256(sub.data));
+
     if (sub.textMode) {
         obj.insert(QStringLiteral("encoding"), QStringLiteral("windows-1251"));
         obj.insert(QStringLiteral("text"), sub.text);
         if (sub.trailingNuls > 0) obj.insert(QStringLiteral("trailing_nuls"), sub.trailingNuls);
     } else {
         obj.insert(QStringLiteral("encoding"), QStringLiteral("binary"));
-        obj.insert(QStringLiteral("data_b64"), QString::fromLatin1(sub.data.toBase64()));
     }
     return obj;
 }
@@ -87,17 +97,32 @@ Subrecord decodeSubrecord(const QJsonObject &obj)
     Subrecord sub;
     sub.type = tagFromJson(obj.value(QStringLiteral("type")), "subrecord type");
     const QString encoding = obj.value(QStringLiteral("encoding")).toString(QStringLiteral("binary"));
+    const bool hasRaw = obj.contains(QStringLiteral("data_b64"));
+    const QByteArray raw = QByteArray::fromBase64(obj.value(QStringLiteral("data_b64")).toString().toLatin1());
+
     if (encoding == QStringLiteral("windows-1251")) {
-        sub.textMode = true;
-        sub.text = obj.value(QStringLiteral("text")).toString();
-        sub.trailingNuls = obj.value(QStringLiteral("trailing_nuls")).toInt(0);
-        if (sub.trailingNuls < 0 || sub.trailingNuls > 1024 * 1024) fail(QStringLiteral("Invalid trailing_nuls"));
-        bool ok = false;
-        sub.data = Cp1251::encode(sub.text, &ok);
-        if (!ok) fail(QStringLiteral("Text contains characters that cannot be encoded as Windows-1251"));
-        sub.data.append(QByteArray(sub.trailingNuls, '\0'));
+        // ArenaTES3JSON v0.1.1+ exports both text and raw bytes. If data_b64 no
+        // longer matches its exported checksum, treat that as an explicit raw
+        // edit and give it priority over the convenience text field.
+        const QString originalRawHash = obj.value(QStringLiteral("data_sha256")).toString();
+        const bool rawWasEdited = hasRaw && !originalRawHash.isEmpty() &&
+                                  dataSha256(raw).compare(originalRawHash, Qt::CaseInsensitive) != 0;
+        if (rawWasEdited) {
+            sub.data = raw;
+            sub.textMode = false;
+        } else {
+            sub.textMode = true;
+            sub.text = obj.value(QStringLiteral("text")).toString();
+            sub.trailingNuls = obj.value(QStringLiteral("trailing_nuls")).toInt(0);
+            if (sub.trailingNuls < 0 || sub.trailingNuls > 1024 * 1024) fail(QStringLiteral("Invalid trailing_nuls"));
+            bool ok = false;
+            sub.data = Cp1251::encode(sub.text, &ok);
+            if (!ok) fail(QStringLiteral("Text contains characters that cannot be encoded as Windows-1251"));
+            sub.data.append(QByteArray(sub.trailingNuls, '\0'));
+        }
     } else if (encoding == QStringLiteral("binary")) {
-        sub.data = QByteArray::fromBase64(obj.value(QStringLiteral("data_b64")).toString().toLatin1());
+        if (!hasRaw) fail(QStringLiteral("Binary subrecord is missing data_b64"));
+        sub.data = raw;
     } else {
         fail(QStringLiteral("Unsupported subrecord encoding: %1").arg(encoding));
     }

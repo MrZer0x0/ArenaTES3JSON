@@ -2,12 +2,29 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "release",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "name": "windows-msvc-release",
+      "displayName": "Windows MSVC 2022 x64 Release",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QTDIR}"
+      }
     }
   ],
-  "buildPresets": [ { "name": "release", "configurePreset": "release" } ],
-  "testPresets": [ { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } } ]
+  "buildPresets": [
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
 }

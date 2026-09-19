@@ -26,7 +26,7 @@ namespace arena::tes3json {
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.1.0 — ESM/ESP ↔ JSON"));
+    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.1.1 — ESM/ESP ↔ JSON"));
     setWindowIcon(QIcon(QStringLiteral(":/ArenaTES3JSON.svg")));
     resize(760, 480);
     setAcceptDrops(true);

@@ -1,13 +1,19 @@
 param(
-  [string]$BuildDir = "build/release",
+  [string]$BuildDir = "build/windows-msvc/Release",
   [string]$OutDir = "dist/ArenaTES3JSON"
 )
 $ErrorActionPreference = "Stop"
-if (-not $env:QTDIR) { throw "Set QTDIR, e.g. C:\Qt\6.8.3\msvc2022_64" }
+$QtDir = $env:QTDIR
+if (-not $QtDir) { $QtDir = $env:QT_ROOT_DIR }
+if (-not $QtDir) { throw "Set QTDIR (local build) or QT_ROOT_DIR (CI) to the Qt MSVC kit directory" }
+if (-not (Test-Path "$QtDir/bin/windeployqt.exe")) { throw "windeployqt.exe not found under Qt directory: $QtDir" }
+if (-not (Test-Path "$BuildDir/ArenaTES3JSON.exe")) { throw "GUI executable not found: $BuildDir/ArenaTES3JSON.exe" }
+if (-not (Test-Path "$BuildDir/ArenaTES3JSON-cli.exe")) { throw "CLI executable not found: $BuildDir/ArenaTES3JSON-cli.exe" }
 New-Item -Force -ItemType Directory $OutDir | Out-Null
 Copy-Item "$BuildDir/ArenaTES3JSON.exe" $OutDir -Force
 Copy-Item "$BuildDir/ArenaTES3JSON-cli.exe" $OutDir -Force
-& "$env:QTDIR/bin/windeployqt.exe" --release --no-translations "$OutDir/ArenaTES3JSON.exe"
+& "$QtDir/bin/windeployqt.exe" --release --no-translations "$OutDir/ArenaTES3JSON.exe"
+if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE" }
 Copy-Item README.md,LICENSE "$OutDir" -Force
 Compress-Archive -Path "$OutDir/*" -DestinationPath "dist/ArenaTES3JSON-windows-x64.zip" -Force
 Write-Host "Created dist/ArenaTES3JSON-windows-x64.zip"

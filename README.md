@@ -19,7 +19,7 @@ Qt/C++ конвертер **Morrowind TES3 plugins**: `.esm/.esp ↔ .json`.
 
 ## Сборка Windows
 
-Требуется Qt 6.5+ (рекомендуется Qt 6.8.x MSVC 2022), CMake, Ninja и Visual Studio Build Tools 2022.
+Требуется Qt 6.5+ (рекомендуется Qt 6.8.x MSVC 2022), CMake 3.24+ и Visual Studio 2022 Build Tools.
 
 ```bat
 set QTDIR=C:\Qt\6.8.3\msvc2022_64
@@ -29,8 +29,8 @@ BUILD_WINDOWS.bat
 После сборки:
 
 ```text
-build\release\ArenaTES3JSON.exe
-build\release\ArenaTES3JSON-cli.exe
+build\windows-msvc\Release\ArenaTES3JSON.exe
+build\windows-msvc\Release\ArenaTES3JSON-cli.exe
 ```
 
 Portable ZIP:

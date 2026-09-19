@@ -40,7 +40,7 @@ QString Cp1251::decode(QByteArrayView bytes, bool *ok)
     for (const char raw : bytes) {
         const auto b = static_cast<unsigned char>(raw);
         if (b < 0x80) {
-            out.append(QChar(b));
+            out.append(QChar(static_cast<ushort>(b)));
         } else {
             const char16_t mapped = kDecode[b - 0x80];
             if (mapped == 0) {

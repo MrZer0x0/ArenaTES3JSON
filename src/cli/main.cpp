@@ -13,7 +13,7 @@ int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("ArenaTES3JSON-cli"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.1.1"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Lossless TES3 ESM/ESP <-> JSON converter with native Windows-1251 support"));

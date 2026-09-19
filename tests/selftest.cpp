@@ -34,6 +34,17 @@ int main(int argc, char **argv)
     const QByteArray cp = Cp1251::encode(russian, &encOk);
     if (!encOk || Cp1251::decode(cp) != russian) return 10;
 
+    // Every defined Windows-1251 byte must decode and encode back to itself.
+    for (int value = 0; value <= 0xFF; ++value) {
+        if (value == 0x98) continue; // undefined in Windows-1251
+        QByteArray one(1, static_cast<char>(value));
+        bool decodeOk = false;
+        const QString decoded = Cp1251::decode(one, &decodeOk);
+        bool reencodeOk = false;
+        const QByteArray reencoded = Cp1251::encode(decoded, &reencodeOk);
+        if (!decodeOk || !reencodeOk || reencoded != one) return 11;
+    }
+
     QByteArray textData = Cp1251::encode(QString::fromUtf8("Привет, Морровинд!"), &encOk);
     textData.append('\0');
     QByteArray binary; binary.append(char(0x01)); binary.append(char(0x00)); binary.append(char(0xFE)); binary.append(char(0x7F));
@@ -65,6 +76,20 @@ int main(int argc, char **argv)
     const QByteArray changedBytes = changed.build();
     const Tes3Plugin changedAgain = Tes3Plugin::parse(changedBytes);
     if (changedAgain.records.at(0).subrecords.at(0).text != QString::fromUtf8("Новый текст")) return 30;
+
+    // If raw Base64 is changed while data_sha256 is left as exported, the raw
+    // bytes are an intentional edit and must take precedence over text.
+    QJsonObject rawEdited = json;
+    QJsonArray rawRecords = rawEdited.value(QStringLiteral("records")).toArray();
+    QJsonObject rawR0 = rawRecords.at(0).toObject();
+    QJsonArray rawSubs = rawR0.value(QStringLiteral("subrecords")).toArray();
+    QJsonObject rawS0 = rawSubs.at(0).toObject();
+    const QByteArray rawReplacement = QByteArray::fromHex("0102ff00");
+    rawS0.insert(QStringLiteral("data_b64"), QString::fromLatin1(rawReplacement.toBase64()));
+    rawSubs[0] = rawS0; rawR0.insert(QStringLiteral("subrecords"), rawSubs); rawRecords[0] = rawR0;
+    rawEdited.insert(QStringLiteral("records"), rawRecords);
+    const Tes3Plugin rawChanged = Tes3Plugin::fromJson(rawEdited);
+    if (rawChanged.records.at(0).subrecords.at(0).data != rawReplacement) return 40;
 
     out << "ArenaTES3JSON self-test OK" << Qt::endl;
     return 0;
