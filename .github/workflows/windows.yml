@@ -1,0 +1,31 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: 'win64_msvc2022_64'
+          cache: true
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        shell: pwsh
+        run: ./scripts/package_windows.ps1 -BuildDir build -OutDir dist/ArenaTES3JSON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ArenaTES3JSON-windows-x64
+          path: dist/ArenaTES3JSON-windows-x64.zip
