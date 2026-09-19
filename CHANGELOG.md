@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.6
+
+- Embedded the ArenaTES3JSON application icon into the Windows GUI executable and the final one-file launcher.
+- Set the Qt application icon globally so title bar, task switcher and dialogs use the same icon.
+- The final `ArenaTES3JSON.exe` now exposes the icon directly to Windows Explorer/shortcuts without external icon files.
+
+## 0.3.5
+
+- Fixed a real semantic data-loss case in JSON -> ESM/ESP for CELL references.
+- The TES3 backend canonicalizes local references (`mast_index = 0`) by omitting explicit `NAM9/object_count = 1`; ArenaTES3JSON now restores that subrecord whenever it was explicitly present in JSON.
+- The supplied MFR regression contains 18,025 affected references. Restoring them adds exactly 216,300 bytes (`18,025 × 12`) and prevents the second ESM -> JSON pass from dropping `object_count`.
+- Added strict FRMR identity validation before applying the repair; references are matched by encoded FRMR rather than list position because the TES3 object model may reorder CELL references.
+- Added regression tests for inserting, preserving, and not inventing `NAM9`.
+- Kept the v0.3.4 native-CAB one-file EXE launcher and automatic RU/EN UI selection.
+
+## 0.3.4
+
+- Added automatic RU/EN UI selection from the Windows/Qt system UI language. Russian locales use Russian; all other locales use English.
+- Localization is compiled into the executable/runtime; no external `.qm` files are required.
+- Replaced the one-file launcher's PowerShell `Expand-Archive` extraction with native Windows CAB extraction through SetupAPI.
+- The one-file launcher no longer requires PowerShell on the target PC to unpack its bundled Qt/runtime files.
+- Runtime cache paths are keyed by the embedded payload SHA-256, avoiding stale/locked cache collisions between builds.
+- Launcher extraction/startup errors are localized automatically and now include the Windows error code and system message.
+
+## 0.3.3
+
+- Fixed a false GitHub Actions failure in the final one-file verification step.
+- Windows GUI executables are now verified with `Start-Process -Wait -PassThru`, so CI waits for `--onefile-selftest` and reads the real process exit code instead of relying on `$LASTEXITCODE`.
+- Added a reusable `scripts/verify_onefile.ps1` check and run it from both GitHub Actions and `BUILD_WINDOWS.bat`.
+- The produced release artifact remains exactly one `ArenaTES3JSON.exe`.
+
 ## 0.3.2
 
 - Fixed JSON -> ESM/ESP for CP1251 punctuation and extended characters using byte-exact CP1251 <-> Windows-1252 transport mapping.

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/localization.h"
+
 #include <QByteArray>
 #include <QMainWindow>
 #include <QProcess>
@@ -36,7 +38,9 @@ private:
     void setBusy(bool busy);
     void handleProgressLine(const QByteArray &line);
     QString directionText() const;
+    QString text(const char *english, const char *russian) const;
 
+    UiLanguage m_language = UiLanguage::English;
     QLineEdit *m_input = nullptr;
     QLineEdit *m_output = nullptr;
     QLabel *m_direction = nullptr;

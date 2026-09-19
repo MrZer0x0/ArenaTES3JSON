@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "core/converter.h"
 
+#include <QCoreApplication>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
@@ -13,6 +14,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QProgressBar>
+#include <QPixmap>
 #include <QPushButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -23,7 +25,7 @@
 namespace arena::tes3json {
 namespace {
 
-QString compactErrorText(QString error)
+QString compactErrorText(QString error, UiLanguage language)
 {
     constexpr qsizetype kMaxErrorChars = 1800;
     error = error.trimmed();
@@ -32,17 +34,19 @@ QString compactErrorText(QString error)
     const qsizetype head = 1400;
     const qsizetype tail = 300;
     return error.left(head)
-        + QStringLiteral("\n\n… сообщение сокращено …\n\n")
+        + l10n(language,
+               "\n\n… message truncated …\n\n",
+               "\n\n… сообщение сокращено …\n\n")
         + error.right(tail);
 }
 
 } // namespace
 
-
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent), m_language(systemUiLanguage())
 {
-    setWindowTitle(QStringLiteral("ArenaTES3JSON 0.3.2"));
-    setWindowIcon(QIcon(QStringLiteral(":/ArenaTES3JSON.svg")));
+    setWindowTitle(QStringLiteral("ArenaTES3JSON %1").arg(QCoreApplication::applicationVersion()));
+    setWindowIcon(QIcon(QStringLiteral(":/ArenaTES3JSON.png")));
     resize(660, 240);
     setMinimumSize(560, 220);
     setAcceptDrops(true);
@@ -52,35 +56,43 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     layout->setContentsMargins(18, 16, 18, 16);
     layout->setSpacing(10);
 
+    auto *headerRow = new QHBoxLayout();
+    auto *appIcon = new QLabel(central);
+    appIcon->setFixedSize(40, 40);
+    const QPixmap iconPixmap(QStringLiteral(":/ArenaTES3JSON.png"));
+    appIcon->setPixmap(iconPixmap.scaled(36, 36, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    appIcon->setAlignment(Qt::AlignCenter);
+
     auto *title = new QLabel(QStringLiteral("<b>ArenaTES3JSON</b>"), central);
     QFont titleFont = title->font();
     titleFont.setPointSize(titleFont.pointSize() + 3);
     title->setFont(titleFont);
-    layout->addWidget(title);
+    headerRow->addWidget(appIcon);
+    headerRow->addWidget(title);
+    headerRow->addStretch(1);
+    layout->addLayout(headerRow);
 
-    auto *hint = new QLabel(
-        QStringLiteral("ESM / ESP ↔ JSON • Windows-1251 / 1C"),
-        central);
+    auto *hint = new QLabel(QStringLiteral("ESM / ESP ↔ JSON • Windows-1251 / 1C"), central);
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
     auto *inputRow = new QHBoxLayout();
     m_input = new QLineEdit(central);
-    m_input->setPlaceholderText(QStringLiteral("Выберите .esm, .esp или .json"));
-    m_inputBrowse = new QPushButton(QStringLiteral("Обзор…"), central);
+    m_input->setPlaceholderText(text("Choose .esm, .esp or .json", "Выберите .esm, .esp или .json"));
+    m_inputBrowse = new QPushButton(text("Browse…", "Обзор…"), central);
     inputRow->addWidget(m_input, 1);
     inputRow->addWidget(m_inputBrowse);
     layout->addLayout(inputRow);
 
     auto *outputRow = new QHBoxLayout();
     m_output = new QLineEdit(central);
-    m_output->setPlaceholderText(QStringLiteral("Выходной файл определяется автоматически"));
-    m_outputBrowse = new QPushButton(QStringLiteral("Сохранить…"), central);
+    m_output->setPlaceholderText(text("Output file is selected automatically", "Выходной файл определяется автоматически"));
+    m_outputBrowse = new QPushButton(text("Save…", "Сохранить…"), central);
     outputRow->addWidget(m_output, 1);
     outputRow->addWidget(m_outputBrowse);
     layout->addLayout(outputRow);
 
-    m_direction = new QLabel(QStringLiteral("Направление: —"), central);
+    m_direction = new QLabel(text("Direction: —", "Направление: —"), central);
     layout->addWidget(m_direction);
 
     m_progress = new QProgressBar(central);
@@ -90,9 +102,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     layout->addWidget(m_progress);
 
     auto *bottomRow = new QHBoxLayout();
-    m_status = new QLabel(QStringLiteral("Готово к работе"), central);
+    m_status = new QLabel(text("Ready", "Готово к работе"), central);
     m_status->setWordWrap(true);
-    m_convert = new QPushButton(QStringLiteral("Конвертировать"), central);
+    m_convert = new QPushButton(text("Convert", "Конвертировать"), central);
     m_convert->setDefault(true);
     m_convert->setMinimumWidth(150);
     bottomRow->addWidget(m_status, 1);
@@ -114,13 +126,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_process, &QProcess::errorOccurred, this, &MainWindow::backendError);
 }
 
+QString MainWindow::text(const char *english, const char *russian) const
+{
+    return l10n(m_language, english, russian);
+}
+
 void MainWindow::browseInput()
 {
     const QString path = QFileDialog::getOpenFileName(
         this,
-        QStringLiteral("Открыть TES3 plugin или JSON"),
+        text("Open TES3 plugin or JSON", "Открыть TES3 plugin или JSON"),
         {},
-        QStringLiteral("TES3/JSON (*.esm *.esp *.json);;Все файлы (*.*)"));
+        text("TES3/JSON (*.esm *.esp *.json);;All files (*.*)",
+             "TES3/JSON (*.esm *.esp *.json);;Все файлы (*.*)"));
     if (!path.isEmpty()) m_input->setText(path);
 }
 
@@ -128,7 +146,7 @@ void MainWindow::browseOutput()
 {
     const QString path = QFileDialog::getSaveFileName(
         this,
-        QStringLiteral("Сохранить результат"),
+        text("Save result", "Сохранить результат"),
         m_output->text());
     if (!path.isEmpty()) m_output->setText(path);
 }
@@ -149,11 +167,11 @@ void MainWindow::updateOutput()
 {
     if (m_input->text().isEmpty()) {
         m_output->clear();
-        m_direction->setText(QStringLiteral("Направление: —"));
+        m_direction->setText(text("Direction: —", "Направление: —"));
         return;
     }
     m_output->setText(Converter::defaultOutputFor(m_input->text()));
-    m_direction->setText(QStringLiteral("Направление: %1").arg(directionText()));
+    m_direction->setText(text("Direction: %1", "Направление: %1").arg(directionText()));
 }
 
 void MainWindow::setBusy(bool busy)
@@ -168,7 +186,8 @@ void MainWindow::setBusy(bool busy)
 void MainWindow::convert()
 {
     if (m_input->text().isEmpty() || m_output->text().isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("ArenaTES3JSON"), QStringLiteral("Выберите входной файл."));
+        QMessageBox::information(this, QStringLiteral("ArenaTES3JSON"),
+                                 text("Choose an input file.", "Выберите входной файл."));
         return;
     }
 
@@ -179,7 +198,9 @@ void MainWindow::convert()
     } else if (ext == QStringLiteral("json")) {
         command = QStringLiteral("to-plugin");
     } else {
-        QMessageBox::warning(this, QStringLiteral("ArenaTES3JSON"), QStringLiteral("Поддерживаются только .esm, .esp и .json."));
+        QMessageBox::warning(this, QStringLiteral("ArenaTES3JSON"),
+                             text("Only .esm, .esp and .json are supported.",
+                                  "Поддерживаются только .esm, .esp и .json."));
         return;
     }
 
@@ -187,7 +208,7 @@ void MainWindow::convert()
     m_stderrPending.clear();
     m_errorText.clear();
     m_progress->setValue(0);
-    m_status->setText(QStringLiteral("Подготовка…"));
+    m_status->setText(text("Preparing…", "Подготовка…"));
     setBusy(true);
 
     m_process->setProgram(Converter::backendPath());
@@ -220,7 +241,7 @@ void MainWindow::handleProgressLine(const QByteArray &line)
     const int value = parts.at(1).toInt(&ok);
     if (!ok) return;
     m_progress->setValue(qBound(0, value, 100));
-    m_status->setText(QStringLiteral("Конвертация… %1%").arg(value));
+    m_status->setText(text("Converting… %1%", "Конвертация… %1%").arg(value));
 }
 
 void MainWindow::readBackendStderr()
@@ -250,20 +271,24 @@ void MainWindow::backendFinished(int exitCode, QProcess::ExitStatus exitStatus)
         m_progress->setValue(0);
         QString error = QString::fromUtf8(m_errorText.trimmed());
         if (error.isEmpty()) error = QString::fromUtf8(m_stdout.trimmed());
-        if (error.isEmpty()) error = QStringLiteral("Неизвестная ошибка backend.");
-        m_status->setText(QStringLiteral("Ошибка"));
-        QMessageBox::critical(this, QStringLiteral("Ошибка ArenaTES3JSON"), compactErrorText(error));
+        if (error.isEmpty()) error = text("Unknown backend error.", "Неизвестная ошибка backend.");
+        m_status->setText(text("Error", "Ошибка"));
+        QMessageBox::critical(this,
+                              text("ArenaTES3JSON Error", "Ошибка ArenaTES3JSON"),
+                              compactErrorText(error, m_language));
         return;
     }
 
     try {
         const ConversionResult result = Converter::parseBackendStatus(m_stdout);
         m_progress->setValue(100);
-        m_status->setText(QStringLiteral("Готово • %1 байт").arg(result.outputSize));
+        m_status->setText(text("Done • %1 bytes", "Готово • %1 байт").arg(result.outputSize));
     } catch (const std::exception &error) {
         m_progress->setValue(0);
-        m_status->setText(QStringLiteral("Ошибка статуса"));
-        QMessageBox::critical(this, QStringLiteral("Ошибка ArenaTES3JSON"), compactErrorText(QString::fromUtf8(error.what())));
+        m_status->setText(text("Status error", "Ошибка статуса"));
+        QMessageBox::critical(this,
+                              text("ArenaTES3JSON Error", "Ошибка ArenaTES3JSON"),
+                              compactErrorText(QString::fromUtf8(error.what()), m_language));
     }
 }
 
@@ -272,10 +297,10 @@ void MainWindow::backendError(QProcess::ProcessError error)
     if (error != QProcess::FailedToStart) return;
     setBusy(false);
     m_progress->setValue(0);
-    m_status->setText(QStringLiteral("Не удалось запустить backend"));
+    m_status->setText(text("Could not start backend", "Не удалось запустить backend"));
     QMessageBox::critical(this,
-                          QStringLiteral("Ошибка ArenaTES3JSON"),
-                          QStringLiteral("Не удалось запустить %1\n%2")
+                          text("ArenaTES3JSON Error", "Ошибка ArenaTES3JSON"),
+                          text("Could not start %1\n%2", "Не удалось запустить %1\n%2")
                               .arg(Converter::backendPath(), m_process->errorString()));
 }
 

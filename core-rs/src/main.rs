@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -69,6 +70,13 @@ enum EncodingMode {
     Raw,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReferenceCountExpectation {
+    mast_index: u32,
+    refr_index: u32,
+    object_count: Option<u32>,
+}
+
 fn main() {
     if let Err(error) = real_main() {
         eprintln!("ArenaTES3JSON-core: {error}");
@@ -87,7 +95,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn usage() -> &'static str {
-    "ArenaTES3JSON-core 0.3.2\n\
+    "ArenaTES3JSON-core 0.3.6\n\
      Usage:\n\
        ArenaTES3JSON-core to-json INPUT.esm OUTPUT.json [--compact] [--encoding cp1251|raw]\n\
        ArenaTES3JSON-core to-plugin INPUT.json OUTPUT.esm [--encoding cp1251|raw]\n"
@@ -100,7 +108,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ArenaTES3JSON-core 0.3.2");
+        println!("ArenaTES3JSON-core 0.3.6");
         std::process::exit(0);
     }
 
@@ -204,6 +212,7 @@ fn to_plugin(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     report_progress(15, "parse-json");
     let mut value: Value = serde_json::from_str(&json)?;
+    let reference_counts = collect_reference_count_expectations(&value)?;
 
     report_progress(30, "encode-windows-1251");
     transform_import_value(&mut value, cli.encoding);
@@ -213,21 +222,351 @@ fn to_plugin(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut plugin = Plugin::new();
     plugin.objects = serde_json::from_str(&tes3_json)?;
 
-    report_progress(70, "write-plugin");
+    report_progress(68, "write-plugin");
     plugin.save_path(&cli.output)?;
+
+    report_progress(84, "restore-reference-counts");
+    let restored = restore_explicit_reference_counts(&cli.output, &reference_counts)?;
 
     report_progress(96, "finish");
     let output_size = fs::metadata(&cli.output)?.len();
     report_progress(100, "done");
+    let message = if restored == 0 {
+        "plugin rebuilt from semantic JSON".to_owned()
+    } else {
+        format!(
+            "plugin rebuilt from semantic JSON; restored {restored} explicit CELL reference object_count/NAM9 subrecords"
+        )
+    };
     emit_status(
         "to-plugin",
         "semantic-rebuild",
         &cli.output,
         json.len() as u64,
         output_size,
-        "plugin rebuilt from semantic JSON",
+        &message,
     );
     Ok(())
+}
+
+fn collect_reference_count_expectations(
+    value: &Value,
+) -> Result<Vec<Vec<ReferenceCountExpectation>>, Box<dyn std::error::Error>> {
+    let objects = value
+        .as_array()
+        .ok_or("semantic JSON root must be an array")?;
+    let mut cells = Vec::new();
+
+    for object in objects {
+        if object.get("type").and_then(Value::as_str) != Some("Cell") {
+            continue;
+        }
+
+        let mut references = Vec::new();
+        if let Some(items) = object.get("references") {
+            let items = items
+                .as_array()
+                .ok_or("Cell.references must be an array")?;
+            references.reserve(items.len());
+
+            for reference in items {
+                let mast_index = json_u32(reference, "mast_index")?;
+                let refr_index = json_u32(reference, "refr_index")?;
+                let object_count = match reference.get("object_count") {
+                    Some(Value::Number(number)) => {
+                        let value = number
+                            .as_u64()
+                            .ok_or("Cell reference object_count must be an unsigned integer")?;
+                        Some(u32::try_from(value).map_err(|_| {
+                            "Cell reference object_count is outside the uint32 range"
+                        })?)
+                    }
+                    Some(Value::Null) | None => None,
+                    Some(_) => {
+                        return Err("Cell reference object_count must be an unsigned integer".into())
+                    }
+                };
+                references.push(ReferenceCountExpectation {
+                    mast_index,
+                    refr_index,
+                    object_count,
+                });
+            }
+        }
+        cells.push(references);
+    }
+
+    Ok(cells)
+}
+
+fn json_u32(value: &Value, key: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let number = value
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("Cell reference {key} must be an unsigned integer"))?;
+    Ok(u32::try_from(number)
+        .map_err(|_| format!("Cell reference {key} is outside the uint32 range"))?)
+}
+
+fn restore_explicit_reference_counts(
+    path: &Path,
+    cells: &[Vec<ReferenceCountExpectation>],
+) -> io::Result<usize> {
+    let bytes = fs::read(path)?;
+    let (patched, restored) = patch_plugin_reference_counts(&bytes, cells)?;
+    if restored != 0 {
+        atomic_write(path, &patched)?;
+    }
+    Ok(restored)
+}
+
+fn patch_plugin_reference_counts(
+    input: &[u8],
+    cells: &[Vec<ReferenceCountExpectation>],
+) -> io::Result<(Vec<u8>, usize)> {
+    let mut output = Vec::with_capacity(input.len());
+    let mut offset = 0usize;
+    let mut cell_index = 0usize;
+    let mut restored = 0usize;
+
+    while offset < input.len() {
+        if input.len() - offset < 16 {
+            return Err(invalid_data("truncated TES3 record header"));
+        }
+
+        let record_type = &input[offset..offset + 4];
+        let size = read_u32_le(input, offset + 4)? as usize;
+        let body_start = offset + 16;
+        let body_end = body_start
+            .checked_add(size)
+            .ok_or_else(|| invalid_data("TES3 record size overflow"))?;
+        if body_end > input.len() {
+            return Err(invalid_data("truncated TES3 record body"));
+        }
+
+        if record_type == b"CELL" {
+            let expected = cells
+                .get(cell_index)
+                .ok_or_else(|| invalid_data("writer produced more CELL records than JSON contains"))?;
+            let (body, count) = patch_cell_reference_counts(&input[body_start..body_end], expected)?;
+            restored += count;
+
+            output.extend_from_slice(&input[offset..offset + 4]);
+            let new_size = u32::try_from(body.len())
+                .map_err(|_| invalid_data("CELL record exceeds uint32 size"))?;
+            output.extend_from_slice(&new_size.to_le_bytes());
+            output.extend_from_slice(&input[offset + 8..offset + 16]);
+            output.extend_from_slice(&body);
+            cell_index += 1;
+        } else {
+            output.extend_from_slice(&input[offset..body_end]);
+        }
+
+        offset = body_end;
+    }
+
+    if cell_index != cells.len() {
+        return Err(invalid_data(format!(
+            "writer produced {cell_index} CELL records, but JSON contains {}",
+            cells.len()
+        )));
+    }
+
+    Ok((output, restored))
+}
+
+#[derive(Clone, Copy)]
+struct SubrecordSpan {
+    start: usize,
+    end: usize,
+    payload_start: usize,
+    payload_len: usize,
+    tag: [u8; 4],
+}
+
+fn patch_cell_reference_counts(
+    body: &[u8],
+    expected: &[ReferenceCountExpectation],
+) -> io::Result<(Vec<u8>, usize)> {
+    let spans = parse_subrecords(body)?;
+    let frmrs: Vec<usize> = spans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, span)| (span.tag == *b"FRMR").then_some(index))
+        .collect();
+
+    if frmrs.len() != expected.len() {
+        return Err(invalid_data(format!(
+            "CELL reference count mismatch: writer has {}, JSON has {}",
+            frmrs.len(),
+            expected.len()
+        )));
+    }
+
+    if frmrs.is_empty() {
+        return Ok((body.to_vec(), 0));
+    }
+
+    // The TES3 object model may reorder references while loading/saving a CELL.
+    // FRMR is the stable per-cell identity, so match JSON expectations by the
+    // encoded master/reference number rather than by list position.
+    let mut expected_by_frmr = HashMap::with_capacity(expected.len());
+    for item in expected {
+        let key = reference_key(*item)?;
+        if expected_by_frmr.insert(key, *item).is_some() {
+            return Err(invalid_data(format!(
+                "duplicate FRMR 0x{key:08X} in JSON CELL references"
+            )));
+        }
+    }
+
+    let mut matched = HashSet::with_capacity(expected.len());
+    let mut output = Vec::with_capacity(body.len());
+    let mut restored = 0usize;
+
+    // Preserve all CELL-level subrecords before the first FRMR byte-for-byte.
+    output.extend_from_slice(&body[..spans[frmrs[0]].start]);
+
+    for (reference_index, &group_start_index) in frmrs.iter().enumerate() {
+        let group_end_index = frmrs
+            .get(reference_index + 1)
+            .copied()
+            .unwrap_or(spans.len());
+        let group = &spans[group_start_index..group_end_index];
+        let actual_frmr = read_frmr(body, group[0])?;
+        let expectation = *expected_by_frmr.get(&actual_frmr).ok_or_else(|| {
+            invalid_data(format!(
+                "writer produced FRMR 0x{actual_frmr:08X} that is not present in JSON CELL references"
+            ))
+        })?;
+        if !matched.insert(actual_frmr) {
+            return Err(invalid_data(format!(
+                "writer produced duplicate FRMR 0x{actual_frmr:08X} in one CELL"
+            )));
+        }
+
+        let existing_nam9 = group.iter().position(|span| span.tag == *b"NAM9");
+        let insert_after = group.iter().position(|span| span.tag == *b"INTV");
+        let fallback_before = group
+            .iter()
+            .position(|span| span.tag == *b"XSOL" || span.tag == *b"DATA")
+            .unwrap_or(group.len());
+
+        for (local_index, span) in group.iter().enumerate() {
+            if span.tag == *b"NAM9" {
+                if let Some(expected_count) = expectation.object_count {
+                    if span.payload_len != 4 {
+                        return Err(invalid_data("NAM9 subrecord must be 4 bytes"));
+                    }
+                    let current = read_u32_le(body, span.payload_start)?;
+                    if current != expected_count {
+                        append_nam9(&mut output, expected_count);
+                        restored += 1;
+                        continue;
+                    }
+                }
+            }
+
+            output.extend_from_slice(&body[span.start..span.end]);
+
+            if expectation.object_count.is_some()
+                && existing_nam9.is_none()
+                && insert_after == Some(local_index)
+            {
+                append_nam9(&mut output, expectation.object_count.unwrap());
+                restored += 1;
+            }
+
+            if expectation.object_count.is_some()
+                && existing_nam9.is_none()
+                && insert_after.is_none()
+                && local_index + 1 == fallback_before
+            {
+                append_nam9(&mut output, expectation.object_count.unwrap());
+                restored += 1;
+            }
+        }
+
+        if expectation.object_count.is_some()
+            && existing_nam9.is_none()
+            && insert_after.is_none()
+            && fallback_before == group.len()
+        {
+            append_nam9(&mut output, expectation.object_count.unwrap());
+            restored += 1;
+        }
+    }
+
+    if matched.len() != expected.len() {
+        return Err(invalid_data("not all JSON CELL references were matched to writer FRMR records"));
+    }
+
+    Ok((output, restored))
+}
+
+fn reference_key(expected: ReferenceCountExpectation) -> io::Result<u32> {
+    if expected.mast_index > 0xFF || expected.refr_index > 0x00FF_FFFF {
+        return Err(invalid_data("JSON CELL reference index cannot be represented by FRMR"));
+    }
+    Ok((expected.mast_index << 24) | expected.refr_index)
+}
+
+fn read_frmr(body: &[u8], span: SubrecordSpan) -> io::Result<u32> {
+    if span.tag != *b"FRMR" || span.payload_len != 4 {
+        return Err(invalid_data("FRMR subrecord must be 4 bytes"));
+    }
+    read_u32_le(body, span.payload_start)
+}
+
+fn append_nam9(output: &mut Vec<u8>, count: u32) {
+    output.extend_from_slice(b"NAM9");
+    output.extend_from_slice(&4u32.to_le_bytes());
+    output.extend_from_slice(&count.to_le_bytes());
+}
+
+fn parse_subrecords(body: &[u8]) -> io::Result<Vec<SubrecordSpan>> {
+    let mut spans = Vec::new();
+    let mut offset = 0usize;
+    while offset < body.len() {
+        if body.len() - offset < 8 {
+            return Err(invalid_data("truncated TES3 subrecord header"));
+        }
+        let mut tag = [0u8; 4];
+        tag.copy_from_slice(&body[offset..offset + 4]);
+        let payload_len = read_u32_le(body, offset + 4)? as usize;
+        let payload_start = offset + 8;
+        let end = payload_start
+            .checked_add(payload_len)
+            .ok_or_else(|| invalid_data("TES3 subrecord size overflow"))?;
+        if end > body.len() {
+            return Err(invalid_data("truncated TES3 subrecord body"));
+        }
+        spans.push(SubrecordSpan {
+            start: offset,
+            end,
+            payload_start,
+            payload_len,
+            tag,
+        });
+        offset = end;
+    }
+    Ok(spans)
+}
+
+fn read_u32_le(data: &[u8], offset: usize) -> io::Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| invalid_data("integer offset overflow"))?;
+    let bytes: [u8; 4] = data
+        .get(offset..end)
+        .ok_or_else(|| invalid_data("truncated uint32 field"))?
+        .try_into()
+        .map_err(|_| invalid_data("invalid uint32 field"))?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 fn transform_export_text(input: &str, mode: EncodingMode) -> String {
@@ -370,5 +709,120 @@ mod tests {
             let unicode = cp1251_from_transport_char(transport);
             assert_eq!(transport_char_from_cp1251(unicode), Some(transport));
         }
+    }
+
+
+    fn subrecord(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(tag);
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn one_cell_plugin(body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"CELL");
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn restores_explicit_nam9_for_local_reference_count_one() {
+        let mut body = Vec::new();
+        body.extend(subrecord(b"NAME", b"\0"));
+        body.extend(subrecord(b"FRMR", &1u32.to_le_bytes()));
+        body.extend(subrecord(b"NAME", b"crate\0"));
+        body.extend(subrecord(b"INTV", &0u32.to_le_bytes()));
+        body.extend(subrecord(b"DATA", &[0u8; 24]));
+        let plugin = one_cell_plugin(&body);
+        let expected = vec![vec![ReferenceCountExpectation {
+            mast_index: 0,
+            refr_index: 1,
+            object_count: Some(1),
+        }]];
+
+        let (patched, restored) = patch_plugin_reference_counts(&plugin, &expected).unwrap();
+        assert_eq!(restored, 1);
+        assert_eq!(patched.len(), plugin.len() + 12);
+        assert!(patched.windows(4).any(|bytes| bytes == b"NAM9"));
+    }
+
+    #[test]
+    fn does_not_invent_nam9_when_json_omits_object_count() {
+        let mut body = Vec::new();
+        body.extend(subrecord(b"NAME", b"\0"));
+        body.extend(subrecord(b"FRMR", &1u32.to_le_bytes()));
+        body.extend(subrecord(b"NAME", b"crate\0"));
+        body.extend(subrecord(b"INTV", &0u32.to_le_bytes()));
+        body.extend(subrecord(b"DATA", &[0u8; 24]));
+        let plugin = one_cell_plugin(&body);
+        let expected = vec![vec![ReferenceCountExpectation {
+            mast_index: 0,
+            refr_index: 1,
+            object_count: None,
+        }]];
+
+        let (patched, restored) = patch_plugin_reference_counts(&plugin, &expected).unwrap();
+        assert_eq!(restored, 0);
+        assert_eq!(patched, plugin);
+    }
+
+    #[test]
+    fn matches_references_by_frmr_not_json_list_order() {
+        let mut body = Vec::new();
+        body.extend(subrecord(b"NAME", b"\0"));
+        body.extend(subrecord(b"FRMR", &1u32.to_le_bytes()));
+        body.extend(subrecord(b"NAME", b"first\0"));
+        body.extend(subrecord(b"INTV", &0u32.to_le_bytes()));
+        body.extend(subrecord(b"DATA", &[0u8; 24]));
+        body.extend(subrecord(b"FRMR", &2u32.to_le_bytes()));
+        body.extend(subrecord(b"NAME", b"second\0"));
+        body.extend(subrecord(b"INTV", &0u32.to_le_bytes()));
+        body.extend(subrecord(b"DATA", &[0u8; 24]));
+        let plugin = one_cell_plugin(&body);
+
+        // Deliberately reverse JSON order. Some real CELLs are normalized by
+        // the TES3 model, so positional matching would be unsafe.
+        let expected = vec![vec![
+            ReferenceCountExpectation {
+                mast_index: 0,
+                refr_index: 2,
+                object_count: None,
+            },
+            ReferenceCountExpectation {
+                mast_index: 0,
+                refr_index: 1,
+                object_count: Some(1),
+            },
+        ]];
+
+        let (patched, restored) = patch_plugin_reference_counts(&plugin, &expected).unwrap();
+        assert_eq!(restored, 1);
+        assert_eq!(patched.len(), plugin.len() + 12);
+    }
+
+    #[test]
+    fn does_not_duplicate_existing_nam9() {
+        let mut body = Vec::new();
+        body.extend(subrecord(b"NAME", b"\0"));
+        body.extend(subrecord(b"FRMR", &1u32.to_le_bytes()));
+        body.extend(subrecord(b"NAME", b"crate\0"));
+        body.extend(subrecord(b"INTV", &0u32.to_le_bytes()));
+        body.extend(subrecord(b"NAM9", &1u32.to_le_bytes()));
+        body.extend(subrecord(b"DATA", &[0u8; 24]));
+        let plugin = one_cell_plugin(&body);
+        let expected = vec![vec![ReferenceCountExpectation {
+            mast_index: 0,
+            refr_index: 1,
+            object_count: Some(1),
+        }]];
+
+        let (patched, restored) = patch_plugin_reference_counts(&plugin, &expected).unwrap();
+        assert_eq!(restored, 0);
+        assert_eq!(patched, plugin);
     }
 }

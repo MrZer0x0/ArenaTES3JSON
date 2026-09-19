@@ -1,4 +1,5 @@
 #include "converter.h"
+#include "localization.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -68,7 +69,9 @@ ConversionResult Converter::parseBackendStatus(const QByteArray &stdoutData)
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(stdoutData.trimmed(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        fail(QStringLiteral("Backend вернул некорректный статус JSON: %1\n%2")
+        fail(l10n(systemUiLanguage(),
+                  "Backend returned invalid status JSON: %1\n%2",
+                  "Backend вернул некорректный статус JSON: %1\n%2")
              .arg(parseError.errorString(), QString::fromUtf8(stdoutData)));
     }
 
@@ -90,12 +93,17 @@ ConversionResult Converter::runBackend(const QStringList &arguments)
     process.setProcessChannelMode(QProcess::SeparateChannels);
     process.start();
     if (!process.waitForStarted()) {
-        fail(QStringLiteral("Не удалось запустить backend: %1\n%2")
+        fail(l10n(systemUiLanguage(),
+                  "Could not start backend: %1\n%2",
+                  "Не удалось запустить backend: %1\n%2")
              .arg(backendPath(), process.errorString()));
     }
     if (!process.waitForFinished(-1)) {
         process.kill();
-        fail(QStringLiteral("Backend не завершил операцию: %1").arg(process.errorString()));
+        fail(l10n(systemUiLanguage(),
+                  "Backend did not finish the operation: %1",
+                  "Backend не завершил операцию: %1")
+             .arg(process.errorString()));
     }
 
     const QByteArray stdoutData = process.readAllStandardOutput().trimmed();
@@ -103,7 +111,11 @@ ConversionResult Converter::runBackend(const QStringList &arguments)
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         QString error = QString::fromUtf8(stderrData);
         if (error.isEmpty()) error = QString::fromUtf8(stdoutData);
-        fail(error.isEmpty() ? QStringLiteral("Ошибка backend ArenaTES3JSON-core") : error);
+        fail(error.isEmpty()
+                 ? l10n(systemUiLanguage(),
+                        "ArenaTES3JSON-core backend error",
+                        "Ошибка backend ArenaTES3JSON-core")
+                 : error);
     }
 
     return parseBackendStatus(stdoutData);

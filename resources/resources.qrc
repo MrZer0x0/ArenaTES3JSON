@@ -1,1 +1,6 @@
-<RCC><qresource prefix="/"><file>ArenaTES3JSON.svg</file></qresource></RCC>
+<RCC>
+  <qresource prefix="/">
+    <file>ArenaTES3JSON.svg</file>
+    <file>ArenaTES3JSON.png</file>
+  </qresource>
+</RCC>

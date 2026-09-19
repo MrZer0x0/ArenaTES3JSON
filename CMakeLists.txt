@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ArenaTES3JSON VERSION 0.3.2 LANGUAGES CXX)
+project(ArenaTES3JSON VERSION 0.3.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,17 @@ option(ARENATES3JSON_BUILD_TESTS "Build tests" ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
+
+if(WIN32)
+    enable_language(RC)
+    set(APP_ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/resources/ArenaTES3JSON.ico")
+    file(TO_CMAKE_PATH "${APP_ICON_ICO}" APP_ICON_ICO_RC)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/ArenaTES3JSON_icon.rc"
+        @ONLY
+    )
+endif()
 
 if(WIN32)
     set(RUST_CORE_EXE "ArenaTES3JSON-core.exe")
@@ -45,6 +56,7 @@ add_custom_target(ArenaTES3JSONRustCore ALL DEPENDS "${RUST_CORE_STAGE}")
 add_library(ArenaTES3JSONFrontend STATIC
     src/core/converter.cpp
     src/core/converter.h
+    src/core/localization.h
 )
 target_link_libraries(ArenaTES3JSONFrontend PUBLIC Qt6::Core)
 target_include_directories(ArenaTES3JSONFrontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -72,12 +84,16 @@ endif()
 
 if(ARENATES3JSON_BUILD_GUI)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
-    add_executable(ArenaTES3JSON
+    set(ARENATES3JSON_GUI_SOURCES
         src/gui/main.cpp
         src/gui/mainwindow.cpp
         src/gui/mainwindow.h
         resources/resources.qrc
     )
+    if(WIN32)
+        list(APPEND ARENATES3JSON_GUI_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/ArenaTES3JSON_icon.rc")
+    endif()
+    add_executable(ArenaTES3JSON ${ARENATES3JSON_GUI_SOURCES})
     target_link_libraries(ArenaTES3JSON PRIVATE ArenaTES3JSONFrontend Qt6::Widgets)
     stage_rust_core(ArenaTES3JSON)
     if(WIN32)

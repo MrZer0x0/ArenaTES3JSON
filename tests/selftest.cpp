@@ -1,4 +1,5 @@
 #include "core/converter.h"
+#include "core/localization.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -29,6 +30,14 @@ int main(int argc, char **argv)
     if (!output.endsWith(QStringLiteral(".esm"))) {
         out << "Header file_type detection failed: " << output << Qt::endl;
         return 30;
+    }
+
+    if (uiLanguageFromTag(QStringLiteral("ru-RU")) != UiLanguage::Russian
+        || uiLanguageFromTag(QStringLiteral("ru")) != UiLanguage::Russian
+        || uiLanguageFromTag(QStringLiteral("en-US")) != UiLanguage::English
+        || uiLanguageFromTag(QStringLiteral("de-DE")) != UiLanguage::English) {
+        out << "UI language selection failed" << Qt::endl;
+        return 31;
     }
 
     out << "ArenaTES3JSON frontend self-test OK" << Qt::endl;
