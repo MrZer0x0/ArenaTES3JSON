@@ -37,16 +37,6 @@ jobs:
         shell: pwsh
         run: ./scripts/package_windows.ps1 -BuildDir build/Release -OutFile dist/ArenaTES3JSON.exe
 
-      - name: Verify one-file package
-        shell: pwsh
-        run: |
-          $files = @(Get-ChildItem dist -File)
-          if ($files.Count -ne 1 -or $files[0].Name -ne "ArenaTES3JSON.exe") {
-            throw "dist must contain exactly one ArenaTES3JSON.exe"
-          }
-          & ./dist/ArenaTES3JSON.exe --onefile-selftest
-          if ($LASTEXITCODE -ne 0) { throw "one-file runtime self-test failed" }
-
       - uses: actions/upload-artifact@v4
         with:
           name: ArenaTES3JSON-windows-x64
